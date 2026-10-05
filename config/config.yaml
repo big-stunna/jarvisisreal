@@ -1,0 +1,16 @@
+# J.A.R.V.I.S. Core Configuration
+llm:
+  default_provider: groq
+  models:
+    fast: llama-3.3-70b-versatile
+    code: claude-3-5-sonnet
+    vision: gemini-1.5-pro
+    offline: qwen2.5:7b
+
+audio:
+  stt_model: base
+  tts_voice: en-GB-RyanNeural
+  ducking_volume: 0.2
+
+system:
+  workspace_preset: default

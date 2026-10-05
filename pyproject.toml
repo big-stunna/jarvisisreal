@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jarvis"
+version = "0.1.0"
+description = "J.A.R.V.I.S. Digital Assistant for Omarchy Linux"
+dependencies = [
+    "pydantic>=2.0",
+    "httpx",
+    "pyyaml",
+    "rich",
+    "textual",
+]
+
+[project.scripts]
+jarvis = "jarvis.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["jarvis*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
