@@ -1,1 +1,1 @@
-def capture_voice(): pass
+STT wired: SUPER+V -> AgentLoop turn()
