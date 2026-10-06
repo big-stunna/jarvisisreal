@@ -12,6 +12,7 @@ dependencies = [
     "pyyaml",
     "rich",
     "textual",
+    "pillow",
 ]
 
 [project.scripts]
