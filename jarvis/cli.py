@@ -9,6 +9,7 @@ from jarvis.tools.registry import ToolRegistry
 from jarvis.tools.system import register_system_tools
 from jarvis.tools.hyprland import register_hyprland_tools
 from jarvis.brain.router import BrainRouter
+from jarvis.tools.vision import capture_screen
 
 console = Console()
 
