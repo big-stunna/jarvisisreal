@@ -10,7 +10,7 @@ from jarvis.core.config import load_config
 
 
 class TaskType(str, Enum):
-    FAST = "fast"        # low-latency conversational / intent parsing -> Gemini
+    FAST = "fast"        # low-latency conversational / intent parsing -> NVIDIA
     CODE = "code"         # deep reasoning / multi-file code edits -> Claude
     VISION = "vision"      # screenshot / multimodal queries -> Gemini
     OFFLINE = "offline"     # no network / air-gapped -> Ollama
@@ -44,7 +44,7 @@ class BrainRouter:
         if self.offline:
             return "ollama"
         return {
-            TaskType.FAST: "gemini",
+            TaskType.FAST: "nvidia",
             TaskType.CODE: "claude",
             TaskType.VISION: "gemini",
             TaskType.OFFLINE: "ollama",

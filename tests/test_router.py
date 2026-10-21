@@ -18,7 +18,7 @@ def test_classify_vision_hint():
 
 def test_route_maps_task_to_provider():
     router = BrainRouter(config={})
-    assert router.route(TaskType.FAST) == "gemini"
+    assert router.route(TaskType.FAST) == "nvidia"
     assert router.route(TaskType.CODE) == "claude"
     assert router.route(TaskType.VISION) == "gemini"
     assert router.route(TaskType.OFFLINE) == "ollama"

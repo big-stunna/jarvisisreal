@@ -1,8 +1,8 @@
 # J.A.R.V.I.S. Core Configuration
 llm:
-  default_provider: gemini
+  default_provider: nvidia
   models:
-    fast: gemini-3.5-flash
+    fast: meta/llama-3.3-70b-instruct
     code: claude-3-5-sonnet
     vision: gemini-3.5-flash
     vision_fallback: gemini-3.1-flash-lite   # used only if the main vision model is busy (429/503)

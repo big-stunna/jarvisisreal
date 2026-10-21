@@ -47,6 +47,33 @@ class GroqProvider(Provider):
         return _parse_openai_style(resp.json())
 
 
+class NvidiaProvider(Provider):
+    """NVIDIA Build OpenAI-compatible endpoint — 1000 free req/model/month."""
+    name = "nvidia"
+    BASE_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+
+    def __init__(self, api_key: Optional[str] = None, client: Optional[httpx.AsyncClient] = None):
+        self.api_key = api_key or os.environ.get("NVIDIA_API_KEY", "")
+        self.client = client or httpx.AsyncClient(timeout=30.0)
+
+    async def complete(self, messages, model=None, tools=None) -> JarvisResponse:
+        if not self.api_key:
+            return JarvisResponse(text="Error: NVIDIA_API_KEY not set in .env.")
+        payload = {
+            "model": model or "meta/llama-3.3-70b-instruct",
+            "messages": [m.model_dump(exclude_none=True) for m in messages],
+        }
+        if tools:
+            payload["tools"] = tools
+        resp = await self.client.post(
+            self.BASE_URL,
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json=payload,
+        )
+        resp.raise_for_status()
+        return _parse_openai_style(resp.json())
+
+
 class ClaudeProvider(Provider):
     name = "claude"
     BASE_URL = "https://api.anthropic.com/v1/messages"
@@ -373,6 +400,7 @@ PROVIDER_KEY_ENV = {
     "groq": "GROQ_API_KEY",
     "claude": "ANTHROPIC_API_KEY",
     "gemini": "GEMINI_API_KEY",
+    "nvidia": "NVIDIA_API_KEY",
 }
 
 
@@ -386,4 +414,5 @@ PROVIDER_REGISTRY = {
     "claude": ClaudeProvider,
     "ollama": OllamaProvider,
     "gemini": GeminiProvider,
+    "nvidia": NvidiaProvider,
 }

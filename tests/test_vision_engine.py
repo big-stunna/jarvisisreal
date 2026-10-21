@@ -81,8 +81,8 @@ async def test_offline_uses_local_vision_model_when_configured():
 
 
 async def test_auto_vision_capture_failure_falls_back_to_text(monkeypatch):
-    gemini_fast = FakeProvider("text answer")
-    loop = _loop({"gemini": gemini_fast})
+    nvidia_fast = FakeProvider("text answer")
+    loop = _loop({"nvidia": nvidia_fast, "gemini": FakeProvider()})
     with patch("jarvis.core.engine.vision.capture_screen", return_value=None), \
          patch("jarvis.core.engine.vision.get_active_window_title", return_value=None):
         response = await loop.turn("what's on my screen")
