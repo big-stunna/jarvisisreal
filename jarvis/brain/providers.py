@@ -294,6 +294,9 @@ class GeminiProvider(Provider):
                 msg = resp.json().get("error", {}).get("message", "")
             except ValueError:
                 msg = resp.text[:200]
+            # Raise on transient errors so engine.py can fall back to Ollama
+            if resp.status_code in self.RETRYABLE:
+                raise ConnectionError(f"Gemini error {resp.status_code}: {msg}")
             return JarvisResponse(text=f"Gemini error {resp.status_code}: {msg}")
 
         data = resp.json()
