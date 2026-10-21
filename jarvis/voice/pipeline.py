@@ -45,8 +45,7 @@ async def voice_turn_async(
     if on_speaking:
         on_speaking(reply)
 
-    with ducked(ducking_volume):
-        await tts.speak_async(reply, voice=tts_voice)
+    await tts.speak_async(reply, voice=tts_voice)
 
     if on_idle:
         on_idle()
