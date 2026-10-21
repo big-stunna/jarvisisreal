@@ -147,17 +147,27 @@ async def _voice_or_chat_turn(
     if on_listening:
         on_listening()
 
-    # Poll stdin every 50ms while recording; first keypress wins
+    # Put stdin in cbreak so any keypress (not just Enter) is detected
+    import termios, tty
     text_input = None
-    while rec_thread.is_alive():
-        ready, _, _ = _select.select([sys.stdin], [], [], 0.05)
-        if ready:
-            stop_event.set()
-            rec_thread.join(timeout=2.0)
-            sys.stdout.write("You: ")
-            sys.stdout.flush()
-            text_input = sys.stdin.readline().strip()
-            break
+    old_settings = termios.tcgetattr(sys.stdin.fileno())
+    try:
+        tty.setcbreak(sys.stdin.fileno())
+        while rec_thread.is_alive():
+            ready, _, _ = _select.select([sys.stdin], [], [], 0.05)
+            if ready:
+                first_char = sys.stdin.read(1)
+                stop_event.set()
+                rec_thread.join(timeout=2.0)
+                # Restore normal line mode so the rest of the line echoes properly
+                termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_settings)
+                sys.stdout.write(f"\rYou: {first_char}")
+                sys.stdout.flush()
+                rest = sys.stdin.readline()
+                text_input = (first_char + rest).strip()
+                break
+    finally:
+        termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_settings)
 
     if text_input is not None:
         if not text_input:
