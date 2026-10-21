@@ -199,40 +199,113 @@ class OllamaProvider(Provider):
 
 
 class GeminiProvider(Provider):
-    name = "gemini"
-    BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
+    """Native generateContent API: the OpenAI-compatible endpoint can't set
+    mediaResolution or thinkingLevel, which are the main token levers
+    (measured: LOW image = 264 tokens vs 1100 default; minimal thinking = 0)."""
 
-    def __init__(self, api_key: Optional[str] = None, client: Optional[httpx.AsyncClient] = None):
+    name = "gemini"
+    URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    RETRYABLE = {429, 500, 503}
+
+    def __init__(
+        self,
+        api_key: Optional[str] = None,
+        client: Optional[httpx.AsyncClient] = None,
+        media_resolution: str = "low",
+        thinking_level: str = "minimal",
+        max_output_tokens: int = 1024,
+        fallback_model: Optional[str] = None,
+    ):
         self.api_key = api_key or os.environ.get("GEMINI_API_KEY", "")
         self.client = client or httpx.AsyncClient(timeout=60.0)
+        self.media_resolution = media_resolution
+        self.thinking_level = thinking_level
+        self.max_output_tokens = max_output_tokens
+        self.fallback_model = fallback_model
 
-    def _format_messages(self, messages: List[ChatMessage]) -> list:
-        """Serialize ChatMessages to OpenAI-compatible dicts; image_url blocks pass through as-is."""
-        result = []
+    @classmethod
+    def from_config(cls, config: dict) -> "GeminiProvider":
+        g = config.get("gemini", {}) or {}
+        return cls(
+            media_resolution=g.get("media_resolution", "low"),
+            thinking_level=g.get("thinking_level", "minimal"),
+            max_output_tokens=int(g.get("max_output_tokens", 1024)),
+            fallback_model=((config.get("llm", {}) or {}).get("models", {}) or {}).get("vision_fallback"),
+        )
+
+    @staticmethod
+    def _parts(content) -> list:
+        if isinstance(content, str):
+            return [{"text": content}] if content else []
+        parts = []
+        for block in content or []:
+            if block.get("type") == "text" and block.get("text"):
+                parts.append({"text": block["text"]})
+            elif block.get("type") == "image_url":
+                url = block.get("image_url", {}).get("url", "")
+                if url.startswith("data:") and "base64," in url:
+                    parts.append({"inline_data": {"mime_type": url[5:url.find(";")], "data": url.split("base64,", 1)[1]}})
+        return parts
+
+    def _payload(self, messages: List[ChatMessage]) -> dict:
+        system, contents = [], []
         for m in messages:
-            if isinstance(m.content, list):
-                result.append({"role": m.role.value, "content": m.content})
-            else:
-                result.append({"role": m.role.value, "content": m.content})
-        return result
+            role = m.role.value
+            if role == "system":
+                system.extend(self._parts(m.content))
+                continue
+            parts = self._parts(m.content)
+            if role == "tool":
+                parts = [{"text": f"[{m.name} result] {m.content}"}]
+            if parts:
+                contents.append({"role": "model" if role == "assistant" else "user", "parts": parts})
+        payload = {
+            "contents": contents,
+            "generationConfig": {
+                "maxOutputTokens": self.max_output_tokens,
+                "mediaResolution": f"MEDIA_RESOLUTION_{self.media_resolution.upper()}",
+                **({"thinkingConfig": {"thinkingLevel": self.thinking_level}}
+                   if self.thinking_level and self.thinking_level.lower() != "none" else {}),
+            },
+        }
+        if system:
+            payload["systemInstruction"] = {"parts": system}
+        return payload
 
     async def complete(self, messages, model=None, tools=None) -> JarvisResponse:
+        # Tools are deliberately not sent: Gemini is only used for vision
+        # turns, and tool schemas would add tokens to every request.
         if not self.api_key:
-            return JarvisResponse(text="[color=red]Error: GEMINI_API_KEY environment variable is not set.[/color] Please set your API keys or configure J.A.R.V.I.S. in offline mode.")
-        payload = {
-            "model": model or "gemini-1.5-flash",
-            "messages": self._format_messages(messages),
-        }
-        if tools:
-            payload["tools"] = tools
+            return JarvisResponse(text="Error: GEMINI_API_KEY is not set in .env.")
+        payload = self._payload(messages)
+        models = [model or "gemini-3.5-flash"]
+        if self.fallback_model and self.fallback_model not in models:
+            models.append(self.fallback_model)
 
-        resp = await self.client.post(
-            self.BASE_URL,
-            headers={"Authorization": f"Bearer {self.api_key}"},
-            json=payload,
-        )
-        resp.raise_for_status()
-        return _parse_openai_style(resp.json())
+        resp = None
+        for m in models:
+            resp = await self.client.post(
+                self.URL.format(model=m), headers={"x-goog-api-key": self.api_key}, json=payload
+            )
+            if resp.status_code not in self.RETRYABLE:
+                break
+        if resp.status_code != 200:
+            try:
+                msg = resp.json().get("error", {}).get("message", "")
+            except ValueError:
+                msg = resp.text[:200]
+            return JarvisResponse(text=f"Gemini error {resp.status_code}: {msg}")
+
+        data = resp.json()
+        parts = ((data.get("candidates") or [{}])[0].get("content") or {}).get("parts", [])
+        text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
+        u = data.get("usageMetadata", {})
+        usage = {
+            "input": u.get("promptTokenCount", 0),
+            "output": u.get("candidatesTokenCount", 0),
+            "thinking": u.get("thoughtsTokenCount", 0),
+        }
+        return JarvisResponse(text=text, usage=usage)
 
 
 def _parse_openai_style(data: dict) -> JarvisResponse:
@@ -248,6 +321,18 @@ def _parse_openai_style(data: dict) -> JarvisResponse:
             )
         )
     return JarvisResponse(text=text, tool_calls=tool_calls)
+
+
+PROVIDER_KEY_ENV = {
+    "groq": "GROQ_API_KEY",
+    "claude": "ANTHROPIC_API_KEY",
+    "gemini": "GEMINI_API_KEY",
+}
+
+
+def provider_available(name: str) -> bool:
+    env = PROVIDER_KEY_ENV.get(name)
+    return env is None or bool(os.environ.get(env))
 
 
 PROVIDER_REGISTRY = {

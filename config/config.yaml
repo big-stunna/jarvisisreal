@@ -2,7 +2,7 @@
 llm:
   default_provider: gemini
   models:
-    fast: gemini-2.0-flash
+    fast: gemini-3.8-flash
     code: claude-3-5-sonnet
     vision: gemini-3.5-flash
     vision_fallback: gemini-3.8-flash   # used only if the main vision model is busy (429/503)
@@ -13,7 +13,7 @@ llm:
 # minimal thinking = 0 thinking tokens. Use medium if small text is misread.
 gemini:
   media_resolution: low        # low | medium | high
-  thinking_level: minimal      # minimal | low | medium | high
+  thinking_level: none         # none | minimal | low | medium | high (none = fastest, no thinking tokens)
   max_output_tokens: 1024
 
 audio:
