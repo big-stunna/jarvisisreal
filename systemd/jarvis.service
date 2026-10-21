@@ -6,7 +6,7 @@ Wants=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/jarvis/.venv/bin/jarvis daemon --offline
+ExecStart=%h/jarvis/.venv/bin/jarvis daemon
 Restart=on-failure
 RestartSec=5s
 

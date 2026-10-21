@@ -3,38 +3,32 @@ ToolRegistry together into a single conversational turn.
 """
 from typing import List, Optional, Tuple
 
-from jarvis.brain.providers import PROVIDER_REGISTRY, Provider
+from jarvis.brain.providers import PROVIDER_REGISTRY, Provider, provider_available
 from jarvis.brain.router import BrainRouter, TaskType
 from jarvis.core.memory import ChatMemory
 from jarvis.core.models import ChatMessage, JarvisResponse, MessageRole
+from jarvis.tools import vision
 from jarvis.tools.registry import ToolRegistry
 
-# Import vision lazily — won't fail if grim/slurp aren't installed yet
-try:
-    from jarvis.tools.vision import capture_screen, get_active_window_geometry
-    _VISION_AVAILABLE = True
-except ImportError:
-    _VISION_AVAILABLE = False
-
 MAX_TOOL_ITERATIONS = 5
+VISION_CONTEXT_MESSAGES = 4
+
+# Exception types that indicate a transient network / auth problem worth retrying offline
+_NETWORK_ERROR_TYPES = (
+    ConnectionError,
+    TimeoutError,
+    OSError,
+)
+_NETWORK_ERROR_STRINGS = ("connect", "timeout", "network", "unreachable", "refused", "ssl", "401", "403")
 
 
-def _sanitise_for_memory(content) -> str:
-    """Return a safe string to store in SQLite — strips base64 image blobs."""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for block in content:
-            if isinstance(block, dict):
-                if block.get("type") == "text":
-                    parts.append(block.get("text", ""))
-                elif block.get("type") == "image_url":
-                    parts.append("[image]")
-            else:
-                parts.append(str(block))
-        return " ".join(p for p in parts if p)
-    return str(content) if content else ""
+def _is_network_error(exc: Exception) -> bool:
+    if isinstance(exc, _NETWORK_ERROR_TYPES):
+        return True
+    # httpx / aiohttp surface as their own types; check by name + message
+    cls = type(exc).__name__.lower()
+    msg = str(exc).lower()
+    return any(k in cls or k in msg for k in _NETWORK_ERROR_STRINGS)
 
 
 class AgentLoop:
@@ -58,119 +52,107 @@ class AgentLoop:
         if self.memory:
             self.history.extend(self.memory.recent(history_limit))
 
-    def _append(self, msg: ChatMessage, *, memory_text: Optional[str] = None) -> None:
-        """Append msg to in-memory history and persist to SQLite.
-
-        ``memory_text`` overrides what is written to SQLite when the real
-        content contains binary data (e.g. base64 image blobs) that should
-        never be stored verbatim.
-        """
+    def _append(self, msg: ChatMessage) -> None:
         self.history.append(msg)
         if self.memory:
-            if memory_text is not None:
-                # Write a sanitised copy so base64 never hits the DB
-                from jarvis.core.models import ChatMessage as _CM
-                sanitised = _CM(
-                    role=msg.role,
-                    content=memory_text,
-                    tool_call_id=msg.tool_call_id,
-                    name=msg.name,
-                    tool_calls=msg.tool_calls,
-                )
-                self.memory.save(sanitised)
-            else:
-                self.memory.save(msg)
+            self.memory.save(msg)
+
+    @property
+    def _config(self) -> dict:
+        return getattr(self.router, "config", None) or {}
+
+    @property
+    def _models(self) -> dict:
+        return (self._config.get("llm", {}) or {}).get("models", {}) or {}
 
     def _get_provider(self, name: str) -> Provider:
         if name not in self.providers:
-            provider_cls = PROVIDER_REGISTRY[name]
-            self.providers[name] = provider_cls()
+            cls = PROVIDER_REGISTRY[name]
+            self.providers[name] = cls.from_config(self._config) if hasattr(cls, "from_config") else cls()
         return self.providers[name]
 
-    def _build_vision_message(self, user_input: str) -> tuple[ChatMessage, str]:
-        """Build a multimodal user message with an active-window screenshot.
+    def _usable(self, name: str) -> bool:
+        return name in self.providers or provider_available(name)
 
-        Returns (message, memory_text) where memory_text is the sanitised
-        string to store in SQLite instead of the raw image content.
-        """
-        # Capture the active window; fall back to full screen if geometry fails
-        b64 = None
-        window_title = "active window"
-        if _VISION_AVAILABLE:
-            geometry_str = get_active_window_geometry()
-            if geometry_str:
-                # Try to pull the window title for the memory label
-                try:
-                    import json, subprocess
-                    raw = subprocess.run(
-                        ["hyprctl", "activewindow", "-j"],
-                        capture_output=True, text=True, check=True
-                    )
-                    data = json.loads(raw.stdout)
-                    window_title = data.get("title") or data.get("class") or "active window"
-                except Exception:
-                    pass
-            b64 = capture_screen(active_window=True)
-            if b64 is None:
-                b64 = capture_screen()  # full screen fallback
+    def _vision_target(self) -> Tuple[Optional[str], Optional[str]]:
+        if not getattr(self.router, "offline", False) and self._usable("gemini"):
+            return "gemini", self._models.get("vision")
+        if self._models.get("vision_offline"):
+            return "ollama", self._models["vision_offline"]
+        return None, None
 
-        if b64:
-            content = [
-                {"type": "text", "text": user_input},
-                {
-                    "type": "image_url",
-                    "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
-                },
-            ]
-            memory_text = f"{user_input} [screenshot of: {window_title}]"
+    async def _vision_turn(self, user_input: str, image_b64: str, label: str) -> JarvisResponse:
+        provider_name, model = self._vision_target()
+        if provider_name is None:
+            response = JarvisResponse(
+                text="Vision is unavailable: set GEMINI_API_KEY in .env and run without --offline, "
+                "or set llm.models.vision_offline to a local vision model."
+            )
         else:
-            # Vision unavailable or capture failed — send text only
-            content = user_input
-            memory_text = user_input
+            # Only a few recent text turns go with the image; tools are omitted.
+            recent = [
+                m for m in self.history[1:]
+                if m.role in (MessageRole.USER, MessageRole.ASSISTANT) and isinstance(m.content, str) and m.content
+            ][-VISION_CONTEXT_MESSAGES:]
+            image_msg = ChatMessage(
+                role=MessageRole.USER,
+                content=[
+                    {"type": "text", "text": user_input},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
+                ],
+            )
+            response = await self._get_provider(provider_name).complete(
+                [self.history[0], *recent, image_msg], model=model, tools=None
+            )
+        # History keeps a text label, never the image, so later turns don't resend it.
+        self._append(ChatMessage(role=MessageRole.USER, content=f"{user_input} [screenshot of: {label}]"))
+        self._append(ChatMessage(role=MessageRole.ASSISTANT, content=response.text))
+        return response
 
-        return (
-            ChatMessage(role=MessageRole.USER, content=content),
-            memory_text,
-        )
-
-    async def turn(self, user_input: str) -> JarvisResponse:
+    async def turn(
+        self, user_input: str, image_b64: Optional[str] = None, image_label: str = "image"
+    ) -> JarvisResponse:
         """Run one full conversational turn: route -> call LLM -> execute any
         tool calls -> call LLM again -> ... until a text-only response.
         """
-        provider_name, model = self.router.route_utterance(user_input)
-        task_type = self.router.classify(user_input)
+        task_type, provider_name, model = self.router.plan(user_input)
 
-        # Auto-attach screenshot for VISION queries; optionally inject live context
-        extra_context = ""
+        if image_b64 is None and task_type == TaskType.VISION:
+            image_b64 = vision.capture_screen(active_window=True) or vision.capture_screen()
+            image_label = vision.get_active_window_title() or "screen"
+            if image_b64 is None:
+                provider_name, model = self.router.route(TaskType.FAST), self.router.model_for(TaskType.FAST)
+        if image_b64:
+            return await self._vision_turn(user_input, image_b64, image_label)
+
+        if not self._usable(provider_name):
+            provider_name, model = "ollama", self._models.get("offline")
+
+        content = user_input
         if self.live_context:
             live_summary = self.live_context.summary()
             if live_summary:
-                extra_context = f" [Live context: {live_summary}]"
-
-        if task_type == TaskType.VISION and _VISION_AVAILABLE:
-            user_msg, memory_text = self._build_vision_message(user_input)
-            # Append live context to user input for vision analysis
-            if extra_context:
-                memory_text += extra_context
-                if isinstance(user_msg.content, list):
-                    # Add text block with extra context
-                    user_msg.content.insert(0, {"type": "text", "text": user_input + extra_context})
-                else:
-                    user_msg.content = user_input + extra_context
-            self._append(user_msg, memory_text=memory_text)
-        else:
-            content = user_input
-            if extra_context:
-                content += extra_context
-            self._append(ChatMessage(role=MessageRole.USER, content=content))
+                content += f" [Live context: {live_summary}]"
+        self._append(ChatMessage(role=MessageRole.USER, content=content))
 
         provider = self._get_provider(provider_name)
-
         response: Optional[JarvisResponse] = None
         for _ in range(MAX_TOOL_ITERATIONS):
-            response = await provider.complete(
-                self.history, model=model, tools=self.registry.schemas() or None
-            )
+            try:
+                response = await provider.complete(
+                    self.history, model=model, tools=self.registry.schemas() or None
+                )
+            except Exception as exc:
+                # Fall back to Ollama on any network / auth error if not already using it
+                if provider_name != "ollama" and _is_network_error(exc):
+                    provider_name = "ollama"
+                    model = self._models.get("offline")
+                    provider = self._get_provider(provider_name)
+                    response = await provider.complete(
+                        self.history, model=model, tools=self.registry.schemas() or None
+                    )
+                else:
+                    raise
             self._append(
                 ChatMessage(
                     role=MessageRole.ASSISTANT,
