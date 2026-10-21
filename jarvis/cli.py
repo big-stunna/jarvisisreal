@@ -110,30 +110,42 @@ async def interactive_chat(offline: bool = False, use_memory: bool = True):
             console.print(f"[bold red]Error:[/bold red] {e}")
 
 
-async def _voice_or_chat_turn(
-    loop, model_size, tts_voice, ducking,
-    on_listening, on_thinking, on_speaking, on_idle, hud,
-):
-    """Race mic recording against stdin. First to arrive wins."""
-    import select as _select
-    import sys
+def _start_recording(model_size):
+    """Start mic recording in a background thread. Returns (stop_event, wav_result, thread)."""
     import threading
-    from jarvis.voice import stt, tts
-    from jarvis.voice.duck import ducked
+    from jarvis.voice import stt
 
     stop_event = threading.Event()
     wav_result: list = [None]
 
     def _record():
-        from jarvis.voice.duck import ducked
-        with ducked(ducking):
-            wav_result[0] = stt.record_until_silence(stop_event=stop_event)
+        wav_result[0] = stt.record_until_silence(stop_event=stop_event)
+
+    t = threading.Thread(target=_record, daemon=True)
+    t.start()
+    return stop_event, wav_result, t
+
+
+async def _voice_or_chat_turn(
+    loop, model_size, tts_voice,
+    on_listening, on_thinking, on_speaking, on_idle,
+    prestarted=None,
+):
+    """Race mic recording against stdin. First to arrive wins.
+    prestarted: (stop_event, wav_result, thread) from previous turn, or None.
+    Returns (reply_text, next_prestarted) — next recording is already running.
+    """
+    import select as _select
+    import sys
+    from jarvis.voice import stt, tts
+
+    if prestarted:
+        stop_event, wav_result, rec_thread = prestarted
+    else:
+        stop_event, wav_result, rec_thread = _start_recording(model_size)
 
     if on_listening:
         on_listening()
-
-    rec_thread = threading.Thread(target=_record, daemon=True)
-    rec_thread.start()
 
     # Poll stdin every 50ms while recording; first keypress wins
     text_input = None
@@ -151,19 +163,19 @@ async def _voice_or_chat_turn(
         if not text_input:
             if on_idle:
                 on_idle()
-            return None
+            return None, _start_recording(model_size)
         if on_thinking:
             on_thinking(text_input)
     else:
         rec_thread.join()
         wav = wav_result[0]
         if wav is None:
-            return None
+            return None, _start_recording(model_size)
         text_input = stt.transcribe(wav, model_size=model_size)
         if not text_input:
             if on_idle:
                 on_idle()
-            return None
+            return None, _start_recording(model_size)
         if on_thinking:
             on_thinking(text_input)
 
@@ -171,10 +183,14 @@ async def _voice_or_chat_turn(
     reply = response.text
     if on_speaking:
         on_speaking(reply)
+
+    # Start next recording NOW, before TTS plays — eliminates gap between turns
+    next_rec = _start_recording(model_size)
+
     await tts.speak_async(reply, voice=tts_voice)
     if on_idle:
         on_idle()
-    return reply
+    return reply, next_rec
 
 
 async def voice_loop(offline: bool = False, use_memory: bool = True, no_hud: bool = False):
@@ -226,19 +242,23 @@ async def voice_loop(offline: bool = False, use_memory: bool = True, no_hud: boo
             hud.idle()
 
     console.print("[bold cyan]J.A.R.V.I.S.[/bold cyan] >> Voice mode active. Speak or type (Ctrl-C to exit).")
+    next_rec = None
     try:
         while True:
             try:
                 console.print("[dim]Listening... (or type)[/dim]")
-                reply = await _voice_or_chat_turn(
-                    loop, model_size, tts_voice, ducking,
-                    _on_listening, _on_thinking, _on_speaking, _on_idle, hud,
+                result = await _voice_or_chat_turn(
+                    loop, model_size, tts_voice,
+                    _on_listening, _on_thinking, _on_speaking, _on_idle,
+                    prestarted=next_rec,
                 )
+                reply, next_rec = result if isinstance(result, tuple) else (result, None)
                 if reply is None:
                     console.print("[dim]  (nothing heard)[/dim]")
             except KeyboardInterrupt:
                 raise
             except Exception as e:
+                next_rec = None
                 console.print(f"[bold red]Error:[/bold red] {e}")
                 if hud:
                     hud.error(str(e))
