@@ -199,6 +199,10 @@ def main():
     elif args.command == "enroll":
         asyncio.run(enroll_voice())
 
+    elif args.command == "gui":
+        from jarvis.ui.chat_window import launch
+        launch()
+
     else:
         console.print(f"Unknown command: {args.command}")
 
