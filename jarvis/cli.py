@@ -15,7 +15,7 @@ from jarvis.tools.everyday import register_everyday_tools
 from jarvis.brain.router import BrainRouter
 from jarvis.tools.vision import capture_screen, read_clipboard
 
-console = Console()
+console = Console(force_terminal=False, highlight=False)
 
 
 def _say(response: JarvisResponse) -> None:
