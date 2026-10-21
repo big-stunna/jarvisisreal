@@ -110,6 +110,73 @@ async def interactive_chat(offline: bool = False, use_memory: bool = True):
             console.print(f"[bold red]Error:[/bold red] {e}")
 
 
+async def _voice_or_chat_turn(
+    loop, model_size, tts_voice, ducking,
+    on_listening, on_thinking, on_speaking, on_idle, hud,
+):
+    """Race mic recording against stdin. First to arrive wins."""
+    import select as _select
+    import sys
+    import threading
+    from jarvis.voice import stt, tts
+    from jarvis.voice.duck import ducked
+
+    stop_event = threading.Event()
+    wav_result: list = [None]
+
+    def _record():
+        from jarvis.voice.duck import ducked
+        with ducked(ducking):
+            wav_result[0] = stt.record_until_silence(stop_event=stop_event)
+
+    if on_listening:
+        on_listening()
+
+    rec_thread = threading.Thread(target=_record, daemon=True)
+    rec_thread.start()
+
+    # Poll stdin every 50ms while recording; first keypress wins
+    text_input = None
+    while rec_thread.is_alive():
+        ready, _, _ = _select.select([sys.stdin], [], [], 0.05)
+        if ready:
+            stop_event.set()
+            rec_thread.join(timeout=2.0)
+            sys.stdout.write("You: ")
+            sys.stdout.flush()
+            text_input = sys.stdin.readline().strip()
+            break
+
+    if text_input is not None:
+        if not text_input:
+            if on_idle:
+                on_idle()
+            return None
+        if on_thinking:
+            on_thinking(text_input)
+    else:
+        rec_thread.join()
+        wav = wav_result[0]
+        if wav is None:
+            return None
+        text_input = stt.transcribe(wav, model_size=model_size)
+        if not text_input:
+            if on_idle:
+                on_idle()
+            return None
+        if on_thinking:
+            on_thinking(text_input)
+
+    response = await loop.turn(text_input)
+    reply = response.text
+    if on_speaking:
+        on_speaking(reply)
+    await tts.speak_async(reply, voice=tts_voice)
+    if on_idle:
+        on_idle()
+    return reply
+
+
 async def voice_loop(offline: bool = False, use_memory: bool = True, no_hud: bool = False):
     """Continuous voice mode: listen → transcribe → respond → speak."""
     registry = _build_registry()
@@ -158,20 +225,14 @@ async def voice_loop(offline: bool = False, use_memory: bool = True, no_hud: boo
         if hud:
             hud.idle()
 
-    console.print("[bold cyan]J.A.R.V.I.S.[/bold cyan] >> Voice mode active. Speak now (Ctrl-C to exit).")
+    console.print("[bold cyan]J.A.R.V.I.S.[/bold cyan] >> Voice mode active. Speak or type (Ctrl-C to exit).")
     try:
         while True:
             try:
-                console.print("[dim]Listening...[/dim]")
-                reply = await voice_turn_async(
-                    loop,
-                    model_size=model_size,
-                    tts_voice=tts_voice,
-                    ducking_volume=ducking,
-                    on_listening=_on_listening,
-                    on_thinking=_on_thinking,
-                    on_speaking=_on_speaking,
-                    on_idle=_on_idle,
+                console.print("[dim]Listening... (or type)[/dim]")
+                reply = await _voice_or_chat_turn(
+                    loop, model_size, tts_voice, ducking,
+                    _on_listening, _on_thinking, _on_speaking, _on_idle, hud,
                 )
                 if reply is None:
                     console.print("[dim]  (nothing heard)[/dim]")

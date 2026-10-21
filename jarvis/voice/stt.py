@@ -28,6 +28,7 @@ def record_until_silence(
     silence_seconds: float = _SILENCE_SECONDS,
     max_seconds: float = _MAX_SECONDS,
     no_speech_timeout: float = _NO_SPEECH_TIMEOUT,
+    stop_event: Optional[threading.Event] = None,
 ) -> bytes:
     """Record from the default mic, stop on silence. Returns WAV bytes."""
     block_size = int(_SAMPLE_RATE * 0.1)  # 100ms chunks
@@ -55,6 +56,8 @@ def record_until_silence(
         pre_speech_chunks = 0
 
         while total < max_chunks:
+            if stop_event and stop_event.is_set():
+                break
             chunk = q.get()
             buf.append(chunk)
             total += 1
