@@ -138,21 +138,9 @@ class AgentLoop:
         provider = self._get_provider(provider_name)
         response: Optional[JarvisResponse] = None
         for _ in range(MAX_TOOL_ITERATIONS):
-            try:
-                response = await provider.complete(
-                    self.history, model=model, tools=self.registry.schemas() or None
-                )
-            except Exception as exc:
-                # Fall back to Ollama on any network / auth error if not already using it
-                if provider_name != "ollama" and _is_network_error(exc):
-                    provider_name = "ollama"
-                    model = self._models.get("offline")
-                    provider = self._get_provider(provider_name)
-                    response = await provider.complete(
-                        self.history, model=model, tools=self.registry.schemas() or None
-                    )
-                else:
-                    raise
+            response = await provider.complete(
+                self.history, model=model, tools=self.registry.schemas() or None
+            )
             self._append(
                 ChatMessage(
                     role=MessageRole.ASSISTANT,
