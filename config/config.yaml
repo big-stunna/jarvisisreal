@@ -3,21 +3,23 @@ llm:
   default_provider: nvidia
   models:
     fast: meta/llama-3.3-70b-instruct
+    code: claude-3-5-sonnet
+    vision: gemini-3.5-flash
+    vision_fallback: gemini-3.1-flash-lite
+    vision_offline: gemma3:4b
+    offline: qwen2.5:7b
   # Ordered fallback chain — exhausts each quota before moving on
   fast_fallbacks:
     - provider: nvidia
-      model: nvidia/llama-3.1-nemotron-70b-instruct   # 1000 req/month
+      model: nvidia/llama-3.1-nemotron-70b-instruct
     - provider: nvidia
-      model: meta/llama-3.1-8b-instruct               # 1000 req/month
+      model: meta/llama-3.1-8b-instruct
     - provider: openrouter
-      model: meta-llama/llama-3.3-70b-instruct:free   # OpenRouter free tier
+      model: nvidia/nemotron-3.5-lightning:free
     - provider: openrouter
-      model: mistralai/mistral-7b-instruct:free        # another free bucket
-    code: claude-3-5-sonnet
-    vision: gemini-3.5-flash
-    vision_fallback: gemini-3.1-flash-lite   # used only if the main vision model is busy (429/503)
-    vision_offline: gemma3:4b           # local vision model used in offline mode
-    offline: qwen2.5:7b
+      model: nvidia/nemotron-3-super-120b-a12b:free
+    - provider: openrouter
+      model: google/gemma-4-31b-it:free
 
 # Token savers (measured): low = ~264 tokens per image vs ~1100 default;
 # minimal thinking = 0 thinking tokens. Use medium if small text is misread.
