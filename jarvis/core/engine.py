@@ -13,22 +13,14 @@ from jarvis.tools.registry import ToolRegistry
 MAX_TOOL_ITERATIONS = 5
 VISION_CONTEXT_MESSAGES = 4
 
-# Exception types that indicate a transient network / auth problem worth retrying offline
-_NETWORK_ERROR_TYPES = (
-    ConnectionError,
-    TimeoutError,
-    OSError,
-)
-_NETWORK_ERROR_STRINGS = ("connect", "timeout", "network", "unreachable", "refused", "ssl", "401", "403")
+_QUOTA_STRINGS = ("429", "quota", "rate limit", "rate_limit", "resource_exhausted", "too many requests")
 
 
-def _is_network_error(exc: Exception) -> bool:
-    if isinstance(exc, _NETWORK_ERROR_TYPES):
-        return True
-    # httpx / aiohttp surface as their own types; check by name + message
-    cls = type(exc).__name__.lower()
+def _is_quota_error(exc: Exception) -> bool:
+    """True when the provider hit a rate-limit or quota cap (worth trying the next provider)."""
     msg = str(exc).lower()
-    return any(k in cls or k in msg for k in _NETWORK_ERROR_STRINGS)
+    cls = type(exc).__name__.lower()
+    return any(k in msg or k in cls for k in _QUOTA_STRINGS)
 
 
 class AgentLoop:
@@ -73,6 +65,15 @@ class AgentLoop:
 
     def _usable(self, name: str) -> bool:
         return name in self.providers or provider_available(name)
+
+    def _fast_chain(self, primary_name: str, primary_model: Optional[str]):
+        """Yield (provider_name, model) starting with primary, then config fallbacks."""
+        yield primary_name, primary_model
+        for fb in (self._config.get("llm", {}) or {}).get("fast_fallbacks", []):
+            name = fb.get("provider")
+            model = fb.get("model")
+            if name and name != primary_name and self._usable(name):
+                yield name, model
 
     def _vision_target(self) -> Tuple[Optional[str], Optional[str]]:
         if not getattr(self.router, "offline", False) and self._usable("gemini"):
@@ -135,12 +136,28 @@ class AgentLoop:
                 content += f" [Live context: {live_summary}]"
         self._append(ChatMessage(role=MessageRole.USER, content=content))
 
+        # Try primary provider; on quota/rate-limit errors walk the fallback chain
         provider = self._get_provider(provider_name)
+        chain = self._fast_chain(provider_name, model)
+        next(chain)  # skip the primary we already have
         response: Optional[JarvisResponse] = None
         for _ in range(MAX_TOOL_ITERATIONS):
-            response = await provider.complete(
-                self.history, model=model, tools=self.registry.schemas() or None
-            )
+            try:
+                response = await provider.complete(
+                    self.history, model=model, tools=self.registry.schemas() or None
+                )
+            except Exception as exc:
+                if _is_quota_error(exc):
+                    try:
+                        provider_name, model = next(chain)
+                        provider = self._get_provider(provider_name)
+                        response = await provider.complete(
+                            self.history, model=model, tools=self.registry.schemas() or None
+                        )
+                    except StopIteration:
+                        raise exc  # all providers exhausted
+                else:
+                    raise
             self._append(
                 ChatMessage(
                     role=MessageRole.ASSISTANT,
