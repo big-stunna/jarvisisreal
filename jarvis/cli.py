@@ -190,10 +190,15 @@ async def voice_loop(offline: bool = False, use_memory: bool = True, no_hud: boo
 
 def main():
     parser = argparse.ArgumentParser(description="J.A.R.V.I.S. Digital Assistant")
-    parser.add_argument("command", nargs="?", default="chat", help="Command to run (chat, voice, enroll-voice)")
-    parser.add_argument("--offline", action="store_true", help="Run entirely using local Ollama model")
+    parser.add_argument(
+        "command", nargs="?", default="chat",
+        help="chat | voice | daemon | ipc <CMD> | status",
+    )
+    parser.add_argument("ipc_cmd", nargs="?", help="IPC command for 'ipc' subcommand")
+    parser.add_argument("--offline",   action="store_true", help="Use local Ollama model only")
     parser.add_argument("--no-memory", action="store_true", help="Don't load or save chat history")
-    parser.add_argument("--no-hud", action="store_true", help="Disable the HUD overlay (voice mode)")
+    parser.add_argument("--no-hud",    action="store_true", help="Disable the HUD overlay")
+    parser.add_argument("--log-level", default="INFO",      help="Logging level for daemon mode")
     args = parser.parse_args()
     load_env()
 
@@ -201,6 +206,21 @@ def main():
         asyncio.run(interactive_chat(offline=args.offline, use_memory=not args.no_memory))
     elif args.command == "voice":
         asyncio.run(voice_loop(offline=args.offline, use_memory=not args.no_memory, no_hud=args.no_hud))
+    elif args.command == "daemon":
+        from jarvis.daemon import main_daemon
+        main_daemon(offline=args.offline, use_memory=not args.no_memory,
+                    no_hud=args.no_hud, log_level=args.log_level)
+    elif args.command == "ipc":
+        from jarvis.daemon import send_ipc
+        cmd = (args.ipc_cmd or "PING").upper()
+        console.print(send_ipc(cmd))
+    elif args.command == "status":
+        from jarvis.daemon import send_ipc
+        resp = send_ipc("PING")
+        if resp == "PONG":
+            console.print("[bold green]Daemon running[/bold green]")
+        else:
+            console.print(f"[yellow]Daemon not running[/yellow] ({resp})")
     else:
         console.print(f"Unknown command: {args.command}")
 
