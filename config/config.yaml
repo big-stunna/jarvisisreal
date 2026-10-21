@@ -17,7 +17,7 @@ gemini:
   max_output_tokens: 1024
 
 audio:
-  stt_model: base
+  stt_model: tiny
   tts_voice: en-GB-RyanNeural
   ducking_volume: 0.2
 
