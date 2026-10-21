@@ -203,6 +203,10 @@ def main():
         from jarvis.ui.chat_window import launch
         launch()
 
+    elif args.command == "ask":
+        from jarvis.ui.voice_popup import launch
+        launch()
+
     else:
         console.print(f"Unknown command: {args.command}")
 
