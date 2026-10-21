@@ -10,7 +10,7 @@ from jarvis.core.config import load_config
 
 
 class TaskType(str, Enum):
-    FAST = "fast"        # low-latency conversational / intent parsing -> Groq
+    FAST = "fast"        # low-latency conversational / intent parsing -> Gemini
     CODE = "code"         # deep reasoning / multi-file code edits -> Claude
     VISION = "vision"      # screenshot / multimodal queries -> Gemini
     OFFLINE = "offline"     # no network / air-gapped -> Ollama
@@ -44,7 +44,7 @@ class BrainRouter:
         if self.offline:
             return "ollama"
         return {
-            TaskType.FAST: "groq",
+            TaskType.FAST: "gemini",
             TaskType.CODE: "claude",
             TaskType.VISION: "gemini",
             TaskType.OFFLINE: "ollama",
@@ -60,7 +60,11 @@ class BrainRouter:
         }[task_type]
         return self.models.get(key)
 
-    def route_utterance(self, utterance: str) -> tuple[str, Optional[str]]:
-        """Convenience: classify + route + resolve model in one call."""
+    def plan(self, utterance: str) -> tuple[TaskType, str, Optional[str]]:
+        """Classify once and return (task_type, provider, model)."""
         task_type = self.classify(utterance)
-        return self.route(task_type), self.model_for(task_type)
+        return task_type, self.route(task_type), self.model_for(task_type)
+
+    def route_utterance(self, utterance: str) -> tuple[str, Optional[str]]:
+        _, provider, model = self.plan(utterance)
+        return provider, model

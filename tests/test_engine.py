@@ -22,7 +22,7 @@ class FakeProvider:
 async def test_turn_with_no_tool_calls_returns_text():
     router = BrainRouter(config={})
     fake = FakeProvider([JarvisResponse(text="hello there")])
-    loop = AgentLoop(router=router, providers={"groq": fake})
+    loop = AgentLoop(router=router, providers={"gemini": fake})
 
     response = await loop.turn("hi jarvis")
 
@@ -42,7 +42,7 @@ async def test_turn_executes_tool_call_then_returns_final_text():
             JarvisResponse(text="It's 10:00"),
         ]
     )
-    loop = AgentLoop(router=router, registry=registry, providers={"groq": fake})
+    loop = AgentLoop(router=router, registry=registry, providers={"gemini": fake})
 
     response = await loop.turn("what time is it")
 
@@ -57,15 +57,15 @@ async def test_turn_executes_tool_call_then_returns_final_text():
 @pytest.mark.asyncio
 async def test_turn_routes_code_tasks_to_claude_provider():
     router = BrainRouter(config={})
-    fake_groq = FakeProvider([JarvisResponse(text="should not be called")])
+    fake_gemini = FakeProvider([JarvisResponse(text="should not be called")])
     fake_claude = FakeProvider([JarvisResponse(text="refactored!")])
-    loop = AgentLoop(router=router, providers={"groq": fake_groq, "claude": fake_claude})
+    loop = AgentLoop(router=router, providers={"gemini": fake_gemini, "claude": fake_claude})
 
     response = await loop.turn("please refactor this function")
 
     assert response.text == "refactored!"
     assert len(fake_claude.calls) == 1
-    assert len(fake_groq.calls) == 0
+    assert len(fake_gemini.calls) == 0
 
 
 @pytest.mark.asyncio
@@ -80,7 +80,7 @@ async def test_turn_stops_after_max_iterations():
         for i in range(10)
     ]
     fake = FakeProvider(responses)
-    loop = AgentLoop(router=router, registry=registry, providers={"groq": fake})
+    loop = AgentLoop(router=router, registry=registry, providers={"gemini": fake})
 
     response = await loop.turn("loop forever")
 

@@ -1,11 +1,20 @@
 # J.A.R.V.I.S. Core Configuration
 llm:
-  default_provider: groq
+  default_provider: gemini
   models:
-    fast: llama-3.3-70b-versatile
+    fast: gemini-2.0-flash
     code: claude-3-5-sonnet
-    vision: gemini-1.5-pro
+    vision: gemini-3.5-flash
+    vision_fallback: gemini-3.8-flash   # used only if the main vision model is busy (429/503)
+    vision_offline: gemma3:4b           # local vision model used in offline mode
     offline: qwen2.5:7b
+
+# Token savers (measured): low = ~264 tokens per image vs ~1100 default;
+# minimal thinking = 0 thinking tokens. Use medium if small text is misread.
+gemini:
+  media_resolution: low        # low | medium | high
+  thinking_level: minimal      # minimal | low | medium | high
+  max_output_tokens: 1024
 
 audio:
   stt_model: base
