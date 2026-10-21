@@ -1,5 +1,6 @@
 """
-J.A.R.V.I.S. voice popup — minimal dark aesthetic.
+J.A.R.V.I.S. voice popup — top-right, stays open, loops until dismissed.
+Close triggers: ESC, or saying "ok close" / "thanks" / "goodbye" / "that's all".
 """
 from __future__ import annotations
 
@@ -8,25 +9,40 @@ import math
 import sys
 
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter, QPen, QFont, QFontMetrics
-from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel
+from PyQt6.QtGui import QColor, QPainter, QPen, QKeySequence, QShortcut
+from PyQt6.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame,
+)
 
-_BG      = "#111111"
-_ACCENT  = "#ffffff"
-_SUB     = "#555555"
-_TEXT    = "#eeeeee"
-_MUTED   = "#444444"
+_BG     = "#111111"
+_BG2    = "#1a1a1a"
+_BORDER = "#2a2a2a"
+_TEXT   = "#eeeeee"
+_SUB    = "#555555"
+_MUTED  = "#333333"
+_RED    = "#cc4444"
 
-_W, _H = 400, 120
+_W, _H  = 320, 110
+_MARGIN = 20   # distance from screen edges
+
+_CLOSE_PHRASES = {
+    "ok close", "okay close", "close", "goodbye", "good bye",
+    "thanks", "thank you", "that's all", "thats all",
+    "stop listening", "dismiss", "go away", "exit",
+}
+
+
+def _is_close_phrase(text: str) -> bool:
+    t = text.lower().strip().rstrip(".,!?")
+    return t in _CLOSE_PHRASES or any(t.startswith(p) for p in _CLOSE_PHRASES)
 
 
 class _Orb(QWidget):
-    """Single breathing circle — smooth, no rings, just one dot."""
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(40, 40)
+        self.setFixedSize(32, 32)
         self._phase = 0.0
-        self._state = "listening"
+        self._state = "idle"
         self._t = QTimer()
         self._t.timeout.connect(self._tick)
         self._t.start(16)
@@ -35,50 +51,49 @@ class _Orb(QWidget):
         self._state = s
 
     def _tick(self):
-        speed = {"listening": 0.03, "thinking": 0.08, "speaking": 0.05}.get(self._state, 0.03)
+        speed = {"listening": 0.03, "thinking": 0.09, "speaking": 0.05, "idle": 0.015}.get(self._state, 0.03)
         self._phase = (self._phase + speed) % (2 * math.pi)
         self.update()
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        cx, cy = 20, 20
+        cx, cy = 16, 16
 
-        if self._state == "listening":
-            # single soft pulse
-            scale = 1.0 + 0.18 * math.sin(self._phase)
-            r = int(10 * scale)
-            alpha = int(180 + 60 * math.sin(self._phase))
-            c = QColor(_ACCENT); c.setAlpha(alpha)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(c)
+        if self._state == "idle":
+            r = 5
+            c = QColor(_SUB); c.setAlpha(160)
+            p.setPen(Qt.PenStyle.NoPen); p.setBrush(c)
+            p.drawEllipse(cx - r, cy - r, r * 2, r * 2)
+
+        elif self._state == "listening":
+            scale = 1.0 + 0.22 * math.sin(self._phase)
+            r = int(8 * scale)
+            alpha = int(170 + 70 * math.sin(self._phase))
+            c = QColor("#ffffff"); c.setAlpha(alpha)
+            p.setPen(Qt.PenStyle.NoPen); p.setBrush(c)
             p.drawEllipse(cx - r, cy - r, r * 2, r * 2)
 
         elif self._state == "thinking":
-            # three small dots rotating
             for i in range(3):
                 angle = self._phase + i * (2 * math.pi / 3)
-                x = cx + int(12 * math.cos(angle))
-                y = cy + int(12 * math.sin(angle))
-                fade = 0.4 + 0.6 * ((math.sin(self._phase * 2 + i) + 1) / 2)
-                c = QColor(_ACCENT); c.setAlpha(int(200 * fade))
-                p.setPen(Qt.PenStyle.NoPen)
-                p.setBrush(c)
+                x = cx + int(10 * math.cos(angle))
+                y = cy + int(10 * math.sin(angle))
+                fade = 0.35 + 0.65 * ((math.sin(self._phase * 2 + i) + 1) / 2)
+                c = QColor("#ffffff"); c.setAlpha(int(190 * fade))
+                p.setPen(Qt.PenStyle.NoPen); p.setBrush(c)
                 p.drawEllipse(x - 3, y - 3, 6, 6)
 
         elif self._state == "speaking":
-            # bars equalizer style (3 bars)
-            bar_w = 5
-            gap   = 4
-            total = 3 * bar_w + 2 * gap
-            x0    = cx - total // 2
+            bw, gap = 4, 3
+            total = 3 * bw + 2 * gap
+            x0 = cx - total // 2
             for i in range(3):
-                h = int(6 + 12 * abs(math.sin(self._phase * 1.5 + i * 1.1)))
-                c = QColor(_ACCENT); c.setAlpha(200)
-                p.setBrush(c)
-                p.setPen(Qt.PenStyle.NoPen)
-                bx = x0 + i * (bar_w + gap)
-                p.drawRoundedRect(bx, cy - h // 2, bar_w, h, 2, 2)
+                h = int(5 + 10 * abs(math.sin(self._phase * 1.6 + i * 1.2)))
+                c = QColor("#ffffff"); c.setAlpha(200)
+                p.setBrush(c); p.setPen(Qt.PenStyle.NoPen)
+                bx = x0 + i * (bw + gap)
+                p.drawRoundedRect(bx, cy - h // 2, bw, h, 2, 2)
 
         p.end()
 
@@ -97,12 +112,10 @@ class _VoiceWorker(QThread):
 class _BrainWorker(QThread):
     answered = pyqtSignal(str)
     error    = pyqtSignal(str)
-    def __init__(self, text):
-        super().__init__(); self._text = text
+    def __init__(self, agent, text):
+        super().__init__(); self._agent = agent; self._text = text
     def run(self):
-        async def _c():
-            from jarvis.core.engine import AgentLoop
-            return (await AgentLoop().turn(self._text)).text
+        async def _c(): return (await self._agent.turn(self._text)).text
         try:    self.answered.emit(asyncio.run(_c()))
         except Exception as e: self.error.emit(str(e))
 
@@ -121,11 +134,19 @@ class VoicePopup(QWidget):
     def __init__(self, tts_voice="en-GB-RyanNeural"):
         super().__init__()
         self._voice = tts_voice
-        self._opacity = 0.0
-        self._fade_in()
+        self._closing = False
+        from jarvis.core.engine import AgentLoop
+        from jarvis.tools.registry import ToolRegistry
+        from jarvis.tools.system import register_system_tools
+        from jarvis.tools.hyprland import register_hyprland_tools
+        r = ToolRegistry()
+        register_system_tools(r); register_hyprland_tools(r)
+        self._agent = AgentLoop(registry=r)
         self._build()
         self._position()
-        self._start_listening()
+        self._fade_in()
+        # start first listen after window is shown
+        QTimer.singleShot(300, self._listen)
 
     def _build(self):
         self.setWindowFlags(
@@ -134,100 +155,122 @@ class VoicePopup(QWidget):
             Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        # Don't steal focus from other windows
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus)
         self.setFixedSize(_W, _H)
+        self.setStyleSheet("* { font-family: 'Inter', 'SF Pro Display', sans-serif; }")
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(28, 22, 28, 22)
-        layout.setSpacing(12)
+        layout.setContentsMargins(18, 14, 18, 14)
+        layout.setSpacing(10)
 
-        row = QWidget()
-        from PyQt6.QtWidgets import QHBoxLayout
-        hl = QHBoxLayout(row)
-        hl.setContentsMargins(0, 0, 0, 0)
-        hl.setSpacing(14)
-
+        # top row: orb + status
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(12)
         self._orb = _Orb()
-        hl.addWidget(self._orb, alignment=Qt.AlignmentFlag.AlignVCenter)
+        top.addWidget(self._orb, alignment=Qt.AlignmentFlag.AlignVCenter)
+        self._status = QLabel("Starting…")
+        self._status.setStyleSheet(f"color: {_TEXT}; font-size: 13px; font-weight: 500; background: transparent;")
+        top.addWidget(self._status)
+        top.addStretch()
+        layout.addLayout(top)
 
-        self._label = QLabel("Listening…")
-        self._label.setStyleSheet(f"color: {_TEXT}; font-size: 14px; font-family: 'Inter', 'SF Pro Display', sans-serif; background: transparent;")
-        self._label.setWordWrap(True)
-        hl.addWidget(self._label)
+        # last response
+        self._reply = QLabel("")
+        self._reply.setStyleSheet(f"color: {_SUB}; font-size: 11px; background: transparent;")
+        self._reply.setWordWrap(True)
+        self._reply.setMaximumHeight(40)
+        layout.addWidget(self._reply)
 
-        layout.addWidget(row)
-
-        self._sub = QLabel("")
-        self._sub.setStyleSheet(f"color: {_SUB}; font-size: 11px; font-family: 'Inter', sans-serif; background: transparent;")
-        self._sub.setWordWrap(True)
-        layout.addWidget(self._sub)
-
-    def _fade_in(self):
-        self._opacity = 0.0
-        self._ft = QTimer()
-        def _step():
-            self._opacity = min(1.0, self._opacity + 0.08)
-            self.setWindowOpacity(self._opacity)
-            if self._opacity >= 1.0:
-                self._ft.stop()
-        self._ft.timeout.connect(_step)
-        self._ft.start(16)
-        self.setWindowOpacity(0.0)
-
-    def _fade_out(self):
-        self._fo = QTimer()
-        def _step():
-            self._opacity = max(0.0, self._opacity - 0.06)
-            self.setWindowOpacity(self._opacity)
-            if self._opacity <= 0.0:
-                self._fo.stop()
-                self.close()
-        self._fo.timeout.connect(_step)
-        self._fo.start(16)
+        # ESC to close (even without focus, bind globally via shortcut on window)
+        QShortcut(QKeySequence("Escape"), self).activated.connect(self._dismiss)
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        c = QColor(_BG); c.setAlpha(245)
+        c = QColor(_BG); c.setAlpha(240)
         p.setBrush(c)
-        p.setPen(QPen(QColor(_MUTED), 0.5))
-        p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 14, 14)
+        p.setPen(QPen(QColor(_BORDER), 1))
+        p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 12, 12)
         p.end()
 
     def _position(self):
         s = QApplication.primaryScreen().availableGeometry()
-        self.move((s.width() - _W) // 2, s.height() - _H - 72)
+        self.move(s.width() - _W - _MARGIN, _MARGIN + 40)
 
-    def _start_listening(self):
+    def _fade_in(self):
+        self._opacity = 0.0
+        self.setWindowOpacity(0.0)
+        t = QTimer(self)
+        def _s():
+            self._opacity = min(1.0, self._opacity + 0.1)
+            self.setWindowOpacity(self._opacity)
+            if self._opacity >= 1.0: t.stop()
+        t.timeout.connect(_s)
+        t.start(16)
+
+    def _dismiss(self):
+        if self._closing: return
+        self._closing = True
+        self._orb.set_state("idle")
+        self._status.setText("Goodbye.")
+        t = QTimer(self)
+        def _s():
+            self._opacity = max(0.0, self._opacity - 0.08)
+            self.setWindowOpacity(self._opacity)
+            if self._opacity <= 0.0: t.stop(); self.close(); QApplication.instance().quit()
+        t.timeout.connect(_s)
+        t.start(16)
+
+    def _listen(self):
+        if self._closing: return
         self._orb.set_state("listening")
-        self._label.setText("Listening…")
+        self._status.setText("Listening…")
         self._vw = _VoiceWorker()
         self._vw.transcribed.connect(self._on_transcribed)
         self._vw.error.connect(self._on_error)
         self._vw.start()
 
-    def _on_transcribed(self, text):
-        if not text: self._fade_out(); return
-        self._sub.setText(f'"{text}"')
-        self._label.setText("Thinking…")
+    def _on_transcribed(self, text: str):
+        if self._closing: return
+        if not text:
+            self._status.setText("Didn't catch that.")
+            QTimer.singleShot(800, self._listen)
+            return
+        if _is_close_phrase(text):
+            self._dismiss()
+            return
+        self._reply.setText(f'"{text}"')
         self._orb.set_state("thinking")
-        self._bw = _BrainWorker(text)
+        self._status.setText("Thinking…")
+        self._bw = _BrainWorker(self._agent, text)
         self._bw.answered.connect(self._on_answered)
         self._bw.error.connect(self._on_error)
         self._bw.start()
 
-    def _on_answered(self, reply):
-        display = reply if len(reply) <= 100 else reply[:97] + "…"
-        self._label.setText(display)
-        self._sub.setText("")
+    def _on_answered(self, reply: str):
+        if self._closing: return
+        display = reply if len(reply) <= 90 else reply[:87] + "…"
+        self._status.setText(display)
+        self._reply.setText("")
         self._orb.set_state("speaking")
         self._tw = _TTSWorker(reply, self._voice)
-        self._tw.done.connect(lambda: QTimer.singleShot(1200, self._fade_out))
+        self._tw.done.connect(self._after_speaking)
         self._tw.start()
 
-    def _on_error(self, err):
-        self._label.setText(err)
-        self._orb.set_state("listening")
-        QTimer.singleShot(3000, self._fade_out)
+    def _after_speaking(self):
+        if self._closing: return
+        # Brief pause then listen again
+        QTimer.singleShot(600, self._listen)
+
+    def _on_error(self, err: str):
+        if self._closing: return
+        self._status.setText("Error — try again")
+        self._reply.setText(err[:60])
+        self._orb.set_state("idle")
+        QTimer.singleShot(2000, self._listen)
 
 
 def launch():
