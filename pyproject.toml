@@ -8,11 +8,15 @@ version = "0.1.0"
 description = "J.A.R.V.I.S. Digital Assistant for Omarchy Linux"
 dependencies = [
     "pydantic>=2.0",
-    "httpx",
     "pyyaml",
     "rich",
-    "textual",
-    "pillow",
+    "numpy",
+    "sounddevice",
+    "faster-whisper",
+    "edge-tts",
+    "resemblyzer",
+    "openwakeword",
+    "av==18.1.0",
 ]
 
 [project.scripts]

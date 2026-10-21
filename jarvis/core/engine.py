@@ -1,46 +1,37 @@
-"""AgentLoop: the core dispatcher that ties BrainRouter + Providers +
-ToolRegistry together into a single conversational turn.
-"""
-from typing import List, Optional, Tuple
+"""AgentLoop: routes each turn through ClaudeCliProvider + ToolRegistry."""
+from __future__ import annotations
 
-from jarvis.brain.providers import PROVIDER_REGISTRY, Provider, provider_available
-from jarvis.brain.router import BrainRouter, TaskType
+from typing import List, Optional
+
+from jarvis.brain.providers import ClaudeCliProvider
 from jarvis.core.memory import ChatMemory
 from jarvis.core.models import ChatMessage, JarvisResponse, MessageRole
-from jarvis.tools import vision
 from jarvis.tools.registry import ToolRegistry
 
 MAX_TOOL_ITERATIONS = 5
-VISION_CONTEXT_MESSAGES = 4
-
-_QUOTA_STRINGS = ("429", "quota", "rate limit", "rate_limit", "resource_exhausted", "too many requests")
-
-
-def _is_quota_error(exc: Exception) -> bool:
-    """True when the provider hit a rate-limit or quota cap (worth trying the next provider)."""
-    msg = str(exc).lower()
-    cls = type(exc).__name__.lower()
-    return any(k in msg or k in cls for k in _QUOTA_STRINGS)
 
 
 class AgentLoop:
     def __init__(
         self,
-        router: Optional[BrainRouter] = None,
+        router=None,          # kept for API compat, unused
         registry: Optional[ToolRegistry] = None,
         providers: Optional[dict] = None,
-        system_prompt: str = "You are J.A.R.V.I.S., a terse and capable Linux desktop assistant.",
+        system_prompt: str = (
+            "You are J.A.R.V.I.S., a terse AI assistant. Speak like Iron Man's JARVIS — "
+            "confident, dry British wit, 1-3 sentences max."
+        ),
         memory: Optional[ChatMemory] = None,
-        history_limit: int = 40,
-        live_context: Optional["LiveContext"] = None,
+        history_limit: int = 20,
+        live_context=None,    # kept for API compat, unused
     ):
-        self.router = router or BrainRouter()
         self.registry = registry or ToolRegistry()
-        self.providers: dict = providers or {}
+        self._provider = ClaudeCliProvider()
         self.system_prompt = system_prompt
         self.memory = memory
-        self.live_context = live_context
-        self.history: List[ChatMessage] = [ChatMessage(role=MessageRole.SYSTEM, content=system_prompt)]
+        self.history: List[ChatMessage] = [
+            ChatMessage(role=MessageRole.SYSTEM, content=system_prompt)
+        ]
         if self.memory:
             self.history.extend(self.memory.recent(history_limit))
 
@@ -49,135 +40,29 @@ class AgentLoop:
         if self.memory:
             self.memory.save(msg)
 
-    @property
-    def _config(self) -> dict:
-        return getattr(self.router, "config", None) or {}
+    async def turn(self, user_input: str, image_b64=None, image_label: str = "image") -> JarvisResponse:
+        self._append(ChatMessage(role=MessageRole.USER, content=user_input))
 
-    @property
-    def _models(self) -> dict:
-        return (self._config.get("llm", {}) or {}).get("models", {}) or {}
-
-    def _get_provider(self, name: str) -> Provider:
-        if name not in self.providers:
-            cls = PROVIDER_REGISTRY[name]
-            self.providers[name] = cls.from_config(self._config) if hasattr(cls, "from_config") else cls()
-        return self.providers[name]
-
-    def _usable(self, name: str) -> bool:
-        return name in self.providers or provider_available(name)
-
-    def _fast_chain(self, primary_name: str, primary_model: Optional[str]):
-        """Yield (provider_name, model) starting with primary, then config fallbacks.
-        Same provider can appear multiple times with different models."""
-        yield primary_name, primary_model
-        seen = {(primary_name, primary_model)}
-        for fb in (self._config.get("llm", {}) or {}).get("fast_fallbacks", []):
-            name = fb.get("provider")
-            model = fb.get("model")
-            if name and (name, model) not in seen and self._usable(name):
-                seen.add((name, model))
-                yield name, model
-
-    def _vision_target(self) -> Tuple[Optional[str], Optional[str]]:
-        if not getattr(self.router, "offline", False) and self._usable("gemini"):
-            return "gemini", self._models.get("vision")
-        if self._models.get("vision_offline"):
-            return "ollama", self._models["vision_offline"]
-        return None, None
-
-    async def _vision_turn(self, user_input: str, image_b64: str, label: str) -> JarvisResponse:
-        provider_name, model = self._vision_target()
-        if provider_name is None:
-            response = JarvisResponse(
-                text="Vision is unavailable: set GEMINI_API_KEY in .env and run without --offline, "
-                "or set llm.models.vision_offline to a local vision model."
-            )
-        else:
-            # Only a few recent text turns go with the image; tools are omitted.
-            recent = [
-                m for m in self.history[1:]
-                if m.role in (MessageRole.USER, MessageRole.ASSISTANT) and isinstance(m.content, str) and m.content
-            ][-VISION_CONTEXT_MESSAGES:]
-            image_msg = ChatMessage(
-                role=MessageRole.USER,
-                content=[
-                    {"type": "text", "text": user_input},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{image_b64}"}},
-                ],
-            )
-            response = await self._get_provider(provider_name).complete(
-                [self.history[0], *recent, image_msg], model=model, tools=None
-            )
-        # History keeps a text label, never the image, so later turns don't resend it.
-        self._append(ChatMessage(role=MessageRole.USER, content=f"{user_input} [screenshot of: {label}]"))
-        self._append(ChatMessage(role=MessageRole.ASSISTANT, content=response.text))
-        return response
-
-    async def turn(
-        self, user_input: str, image_b64: Optional[str] = None, image_label: str = "image"
-    ) -> JarvisResponse:
-        """Run one full conversational turn: route -> call LLM -> execute any
-        tool calls -> call LLM again -> ... until a text-only response.
-        """
-        task_type, provider_name, model = self.router.plan(user_input)
-
-        if image_b64 is None and task_type == TaskType.VISION:
-            image_b64 = vision.capture_screen(active_window=True) or vision.capture_screen()
-            image_label = vision.get_active_window_title() or "screen"
-            if image_b64 is None:
-                provider_name, model = self.router.route(TaskType.FAST), self.router.model_for(TaskType.FAST)
-        if image_b64:
-            return await self._vision_turn(user_input, image_b64, image_label)
-
-        if not self._usable(provider_name):
-            provider_name, model = "ollama", self._models.get("offline")
-
-        content = user_input
-        if self.live_context:
-            live_summary = self.live_context.summary()
-            if live_summary:
-                content += f" [Live context: {live_summary}]"
-        self._append(ChatMessage(role=MessageRole.USER, content=content))
-
-        # Try primary provider; on quota/rate-limit errors walk the fallback chain
-        provider = self._get_provider(provider_name)
-        chain = self._fast_chain(provider_name, model)
-        next(chain)  # skip the primary we already have
         response: Optional[JarvisResponse] = None
         for _ in range(MAX_TOOL_ITERATIONS):
-            try:
-                response = await provider.complete(
-                    self.history, model=model, tools=self.registry.schemas() or None
-                )
-            except Exception as exc:
-                if _is_quota_error(exc):
-                    try:
-                        provider_name, model = next(chain)
-                        provider = self._get_provider(provider_name)
-                        response = await provider.complete(
-                            self.history, model=model, tools=self.registry.schemas() or None
-                        )
-                    except StopIteration:
-                        raise exc  # all providers exhausted
-                else:
-                    raise
-            self._append(
-                ChatMessage(
-                    role=MessageRole.ASSISTANT,
-                    content=response.text,
-                    tool_calls=[tc.model_dump() for tc in response.tool_calls] or None,
-                )
+            response = await self._provider.complete(
+                self.history,
+                tools=self.registry.schemas() or None,
             )
+            self._append(ChatMessage(
+                role=MessageRole.ASSISTANT,
+                content=response.text,
+                tool_calls=[tc.model_dump() for tc in response.tool_calls] or None,
+            ))
             if not response.tool_calls:
                 break
             for call in response.tool_calls:
                 result = await self.registry.execute(call)
-                self._append(
-                    ChatMessage(
-                        role=MessageRole.TOOL,
-                        content=result.content,
-                        tool_call_id=result.tool_call_id,
-                        name=result.name,
-                    )
-                )
+                self._append(ChatMessage(
+                    role=MessageRole.TOOL,
+                    content=result.content,
+                    tool_call_id=result.tool_call_id,
+                    name=result.name,
+                ))
+
         return response

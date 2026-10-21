@@ -1,10 +1,13 @@
 """
-Jarvis daemon entry point.
+J.A.R.V.I.S. daemon — always-on background process.
 
-Runs the voice loop as a proper background service:
-- Logs via Python logging (captured by systemd journal via stderr)
-- Handles SIGTERM / SIGINT for graceful shutdown
-- Exposes a Unix socket for IPC (trigger a voice turn, show/hide HUD)
+Flow:
+  boot → idle (silent)
+  SIGUSR1 / IPC TOGGLE → enabled ↔ disabled  (sticky)
+  enabled + wake word "hey jarvis" → verify speaker → STT → Claude → TTS
+  SIGTERM / IPC QUIT → clean shutdown
+
+Toggle is sticky: once disabled, stays off until toggled again.
 """
 from __future__ import annotations
 
@@ -27,31 +30,22 @@ def _setup_logging(level: str = "INFO") -> None:
     logging.basicConfig(
         level=getattr(logging, level.upper(), logging.INFO),
         format=LOG_FORMAT,
-        handlers=[logging.StreamHandler()],  # systemd captures stderr
+        handlers=[logging.StreamHandler()],
     )
 
 
-# ── IPC socket ────────────────────────────────────────────────────────────────
+# ── IPC ───────────────────────────────────────────────────────────────────────
 
 class IPCServer:
-    """
-    Tiny Unix-domain socket server.
-    Commands (newline-terminated strings):
-      PING           → PONG
-      VOICE          → trigger one voice turn
-      HIDE           → hide HUD
-      SHOW           → show HUD
-      QUIT           → graceful shutdown
-    """
-    def __init__(self, loop: asyncio.AbstractEventLoop, shutdown_event: asyncio.Event):
+    """Unix socket IPC. Commands: PING, TOGGLE, QUIT."""
+
+    def __init__(self, loop: asyncio.AbstractEventLoop,
+                 shutdown_event: asyncio.Event,
+                 toggle_cb):
         self._loop = loop
         self._shutdown_event = shutdown_event
-        self._voice_trigger: Optional[asyncio.Event] = None
+        self._toggle_cb = toggle_cb
         self._server: Optional[socket.socket] = None
-        self._thread: Optional[threading.Thread] = None
-
-    def set_voice_trigger(self, event: asyncio.Event) -> None:
-        self._voice_trigger = event
 
     def start(self) -> None:
         SOCKET_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -61,13 +55,13 @@ class IPCServer:
         self._server.bind(str(SOCKET_PATH))
         self._server.listen(4)
         self._server.settimeout(1.0)
-        self._thread = threading.Thread(target=self._serve, daemon=True, name="jarvis-ipc")
-        self._thread.start()
+        threading.Thread(target=self._serve, daemon=True, name="jarvis-ipc").start()
         log.info("IPC socket: %s", SOCKET_PATH)
 
     def stop(self) -> None:
         if self._server:
-            self._server.close()
+            try: self._server.close()
+            except Exception: pass
         if SOCKET_PATH.exists():
             SOCKET_PATH.unlink()
 
@@ -89,8 +83,8 @@ class IPCServer:
     def _handle(self, cmd: str) -> str:
         if cmd == "PING":
             return "PONG"
-        if cmd == "VOICE" and self._voice_trigger:
-            self._loop.call_soon_threadsafe(self._voice_trigger.set)
+        if cmd == "TOGGLE":
+            self._loop.call_soon_threadsafe(self._toggle_cb)
             return "OK"
         if cmd == "QUIT":
             self._loop.call_soon_threadsafe(self._shutdown_event.set)
@@ -99,7 +93,6 @@ class IPCServer:
 
 
 def send_ipc(cmd: str) -> str:
-    """Send a command to a running daemon. Returns the response or an error."""
     if not SOCKET_PATH.exists():
         return "Daemon not running"
     try:
@@ -112,29 +105,63 @@ def send_ipc(cmd: str) -> str:
         return f"IPC error: {e}"
 
 
-# ── main daemon loop ──────────────────────────────────────────────────────────
+# ── voice turn ────────────────────────────────────────────────────────────────
 
-async def run_daemon(
-    offline: bool = False,
-    use_memory: bool = True,
-    no_hud: bool = False,
-    log_level: str = "INFO",
-) -> None:
+async def _do_voice_turn(agent_loop, hud, model_size: str, tts_voice: str) -> None:
+    """Record → verify → transcribe → Claude → speak."""
+    import io, wave
+    import numpy as np
+    from jarvis.voice import stt, tts as tts_mod
+    from jarvis.voice.verify import verify
+
+    if hud: hud.listening()
+
+    wav_bytes = stt.record_until_silence()
+    if not wav_bytes:
+        if hud: hud.idle()
+        return
+
+    # Decode WAV bytes → float32 numpy for speaker verification
+    with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+        raw = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
+    wav_f32 = raw.astype(np.float32) / 32768.0
+
+    # Speaker verification
+    accepted, score = verify(wav_f32)
+    if not accepted:
+        log.info("Voice rejected (similarity=%.3f)", score)
+        if hud: hud.idle()
+        return
+
+    text = stt.transcribe(wav_bytes, model_size=model_size).strip()
+    if not text:
+        if hud: hud.idle()
+        return
+
+    log.info("You: %s", text)
+    if hud: hud.thinking(text)
+
+    response = await agent_loop.turn(text)
+    reply = response.text.strip()
+    log.info("J.A.R.V.I.S.: %s", reply)
+
+    if hud: hud.speaking(reply)
+    await tts_mod.speak_async(reply, voice=tts_voice)
+    if hud: hud.idle()
+
+
+# ── main daemon ───────────────────────────────────────────────────────────────
+
+async def run_daemon(no_hud: bool = False, log_level: str = "INFO") -> None:
     _setup_logging(log_level)
-    log.info("J.A.R.V.I.S. daemon starting (offline=%s)", offline)
+    log.info("J.A.R.V.I.S. daemon starting")
 
     from jarvis.core.config import load_config, load_env
     from jarvis.core.engine import AgentLoop
-    from jarvis.core.memory import ChatMemory
-    from jarvis.brain.router import BrainRouter
     from jarvis.tools.registry import ToolRegistry
     from jarvis.tools.system import register_system_tools
     from jarvis.tools.hyprland import register_hyprland_tools
-    from jarvis.tools.windows import register_window_tools
-    from jarvis.tools.files import register_file_tools
-    from jarvis.tools.everyday import register_everyday_tools
-    from jarvis.tools.context import LiveContext
-    from jarvis.voice.pipeline import voice_turn_async
+    from jarvis.voice.chimes import play_on, play_off
 
     load_env()
     config = load_config()
@@ -142,19 +169,12 @@ async def run_daemon(
     registry = ToolRegistry()
     register_system_tools(registry)
     register_hyprland_tools(registry)
-    register_window_tools(registry)
-    register_file_tools(registry)
-    register_everyday_tools(registry)
 
-    router = BrainRouter(offline=offline)
-    memory = ChatMemory() if use_memory else None
-    live_context = LiveContext.from_config(config)
-    agent_loop = AgentLoop(router=router, registry=registry, memory=memory, live_context=live_context)
+    agent_loop = AgentLoop(registry=registry)
 
-    audio_cfg = config.get("audio", {})
-    model_size   = audio_cfg.get("stt_model", "base")
-    tts_voice    = audio_cfg.get("tts_voice", "en-GB-RyanNeural")
-    ducking      = float(audio_cfg.get("ducking_volume", 0.2))
+    audio_cfg  = config.get("audio", {})
+    model_size = audio_cfg.get("stt_model", "tiny")
+    tts_voice  = audio_cfg.get("tts_voice", "en-GB-RyanNeural")
 
     # ── HUD ──────────────────────────────────────────────────────────────
     hud = None
@@ -166,62 +186,72 @@ async def run_daemon(
         except Exception as e:
             log.warning("HUD unavailable: %s", e)
 
-    # ── shutdown / IPC ────────────────────────────────────────────────────
+    # ── state ─────────────────────────────────────────────────────────────
     loop = asyncio.get_running_loop()
     shutdown_event = asyncio.Event()
+    enabled = True   # sticky toggle state
+    _voice_event = asyncio.Event()
+
+    def _toggle():
+        nonlocal enabled
+        enabled = not enabled
+        if enabled:
+            log.info("Jarvis ENABLED")
+            play_on()
+            if hud: hud.idle()
+        else:
+            log.info("Jarvis DISABLED")
+            play_off()
+            if hud: hud.idle()
 
     def _handle_signal(*_):
-        log.info("Signal received, shutting down")
         loop.call_soon_threadsafe(shutdown_event.set)
 
     for sig in (signal.SIGTERM, signal.SIGINT):
         loop.add_signal_handler(sig, _handle_signal)
 
-    ipc = IPCServer(loop, shutdown_event)
+    # SIGUSR1 = toggle
+    loop.add_signal_handler(signal.SIGUSR1, _toggle)
+
+    ipc = IPCServer(loop, shutdown_event, _toggle)
     ipc.start()
 
-    # ── voice loop ────────────────────────────────────────────────────────
-    log.info("Voice loop running. Send SIGTERM or IPC QUIT to stop.")
+    # ── wake word ─────────────────────────────────────────────────────────
+    def _on_wake():
+        if enabled:
+            loop.call_soon_threadsafe(_voice_event.set)
 
-    def _on_listening():
-        log.debug("Listening...")
-        if hud: hud.listening()
+    wake = None
+    try:
+        from jarvis.wake.detector import WakeWordDetector
+        wake = WakeWordDetector(on_wake=_on_wake)
+        wake.start()
+    except Exception as e:
+        log.warning("Wake word detector unavailable: %s — using IPC VOICE trigger only", e)
 
-    def _on_thinking(t: str):
-        log.info("You: %s", t)
-        if hud: hud.thinking(t)
-
-    def _on_speaking(r: str):
-        log.info("J.A.R.V.I.S.: %s", r)
-        if hud: hud.speaking(r)
-
-    def _on_idle():
-        if hud: hud.idle()
+    log.info("Ready. Say 'Hey Jarvis' or send IPC TOGGLE to enable/disable.")
 
     try:
         while not shutdown_event.is_set():
             try:
-                await voice_turn_async(
-                    agent_loop,
-                    model_size=model_size,
-                    tts_voice=tts_voice,
-                    ducking_volume=ducking,
-                    on_listening=_on_listening,
-                    on_thinking=_on_thinking,
-                    on_speaking=_on_speaking,
-                    on_idle=_on_idle,
-                )
-            except Exception as e:
-                log.error("Voice turn error: %s", e)
-                await asyncio.sleep(1)
+                await asyncio.wait_for(_voice_event.wait(), timeout=1.0)
+            except asyncio.TimeoutError:
+                continue
+            _voice_event.clear()
+            if enabled:
+                try:
+                    await _do_voice_turn(agent_loop, hud, model_size, tts_voice)
+                except Exception as e:
+                    log.error("Voice turn error: %s", e)
+                    if hud: hud.error(str(e))
+                    await asyncio.sleep(0.5)
+                    if hud: hud.idle()
     finally:
+        if wake: wake.stop()
         ipc.stop()
-        if hud:
-            hud.stop()
+        if hud: hud.stop()
         log.info("Daemon stopped")
 
 
-def main_daemon(offline: bool = False, use_memory: bool = True,
-                no_hud: bool = False, log_level: str = "INFO") -> None:
-    asyncio.run(run_daemon(offline=offline, use_memory=use_memory,
-                           no_hud=no_hud, log_level=log_level))
+def main_daemon(no_hud: bool = False, log_level: str = "INFO") -> None:
+    asyncio.run(run_daemon(no_hud=no_hud, log_level=log_level))

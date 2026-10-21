@@ -1,317 +1,204 @@
+"""J.A.R.V.I.S. CLI entry point."""
+from __future__ import annotations
+
 import argparse
 import asyncio
 from rich.console import Console
 
-from jarvis.core.engine import AgentLoop
-from jarvis.core.memory import ChatMemory
 from jarvis.core.config import load_env
+from jarvis.core.engine import AgentLoop
 from jarvis.core.models import JarvisResponse
 from jarvis.tools.registry import ToolRegistry
 from jarvis.tools.system import register_system_tools
 from jarvis.tools.hyprland import register_hyprland_tools
-from jarvis.tools.windows import register_window_tools
-from jarvis.tools.files import register_file_tools
-from jarvis.tools.everyday import register_everyday_tools
-from jarvis.brain.router import BrainRouter
-from jarvis.tools.vision import capture_screen, read_clipboard
 
 console = Console(force_terminal=False, highlight=False)
 
 
 def _say(response: JarvisResponse) -> None:
     console.print(f"[bold cyan]J.A.R.V.I.S.[/bold cyan] >> {response.text}")
-    if response.usage:
-        u = response.usage
-        console.print(f"[dim]tokens: {u['input']} in / {u['output']} out / {u['thinking']} thinking[/dim]")
 
 
-def _build_registry() -> ToolRegistry:
+def _build_loop() -> AgentLoop:
     registry = ToolRegistry()
     register_system_tools(registry)
     register_hyprland_tools(registry)
-    register_window_tools(registry)
-    register_file_tools(registry)
-    register_everyday_tools(registry)
-    return registry
+    return AgentLoop(registry=registry)
 
 
-async def interactive_chat(offline: bool = False, use_memory: bool = True):
-    console.print("[bold cyan]J.A.R.V.I.S.[/bold cyan] >> Initializing systems...")
+# ── chat ──────────────────────────────────────────────────────────────────────
 
-    registry = _build_registry()
-
-    router = BrainRouter(offline=offline)
-    memory = ChatMemory() if use_memory else None
-    # Load config and build live context if enabled
-    from jarvis.core.config import load_config
-    config = load_config()
-    from jarvis.tools.context import LiveContext
-    live_context = LiveContext.from_config(config)
-    loop = AgentLoop(router=router, registry=registry, memory=memory, live_context=live_context)
-    if memory and memory.count():
-        console.print(f"[dim]Memory loaded: {memory.count()} past messages ({memory.db_path}). Type '/forget' to wipe.[/dim]")
-
-    console.print("[bold cyan]J.A.R.V.I.S.[/bold cyan] >> Online and listening. (Type 'exit' or 'quit' to stop, '! <cmd>' to run a shell command)")
-
+async def interactive_chat():
+    loop = _build_loop()
+    console.print("[bold cyan]J.A.R.V.I.S.[/bold cyan] >> Online. Type 'exit' to quit.")
     while True:
         try:
             user_input = console.input("[bold green]You:[/bold green] ").strip()
             if not user_input:
                 continue
             if user_input.lower() in ("exit", "quit"):
-                console.print("[bold cyan]J.A.R.V.I.S.[/bold cyan] >> Shutting down...")
                 break
-            if user_input == "/forget":
-                if memory:
-                    memory.clear()
-                loop.history = loop.history[:1]
-                console.print("[bold cyan]J.A.R.V.I.S.[/bold cyan] >> Memory wiped.")
-                continue
-
-            # Handle special CLI commands
-            if user_input == "/see" or user_input.startswith("/see "):
-                query = user_input[4:].strip()
-                if not query:
-                    console.print("[yellow]Usage: /see <question>[/yellow]")
-                    continue
-                b64 = capture_screen()
-                if not b64:
-                    console.print("[yellow]Screenshot capture failed.[/yellow]")
-                    continue
-                _say(await loop.turn(query, image_b64=b64, image_label="full screen"))
-                continue
-
-            if user_input == "/see-region":
-                b64 = capture_screen(region=True)
-                if not b64:
-                    console.print("[yellow]Region capture cancelled or failed.[/yellow]")
-                    continue
-                query = console.input("[bold green]Question:[/bold green] ").strip() or "What is this?"
-                _say(await loop.turn(query, image_b64=b64, image_label="selected region"))
-                continue
-
-            if user_input == "/clip" or user_input.startswith("/clip "):
-                query = user_input[5:].strip()
-                clip = read_clipboard()
-                if clip["type"] == "image":
-                    _say(await loop.turn(query or "Describe this image.", image_b64=clip["content"], image_label="clipboard image"))
-                elif clip["type"] == "text":
-                    _say(await loop.turn(f"{query or 'Help me with this:'}\n\n{clip['content']}"))
-                else:
-                    console.print(f"[yellow]{clip.get('error', 'Clipboard empty')}[/yellow]")
-                continue
-
             _say(await loop.turn(user_input))
-
         except KeyboardInterrupt:
-            console.print("\n[bold cyan]J.A.R.V.I.S.[/bold cyan] >> Shutting down on interrupt...")
             break
         except Exception as e:
             console.print(f"[bold red]Error:[/bold red] {e}")
 
 
-def _start_recording(model_size):
-    """Start mic recording in a background thread. Returns (stop_event, wav_result, thread)."""
-    import threading
-    from jarvis.voice import stt
+# ── voice mode ────────────────────────────────────────────────────────────────
 
-    stop_event = threading.Event()
-    wav_result: list = [None]
-
-    def _record():
-        wav_result[0] = stt.record_until_silence(stop_event=stop_event)
-
-    t = threading.Thread(target=_record, daemon=True)
-    t.start()
-    return stop_event, wav_result, t
-
-
-async def _voice_or_chat_turn(
-    loop, model_size, tts_voice,
-    on_listening, on_thinking, on_speaking, on_idle,
-    prestarted=None,
-):
-    """Race mic recording against stdin. First to arrive wins.
-    prestarted: (stop_event, wav_result, thread) from previous turn, or None.
-    Returns (reply_text, next_prestarted) — next recording is already running.
-    """
+async def voice_loop(no_hud: bool = False):
+    """Continuous voice: listen → transcribe → Claude CLI → TTS."""
     import select as _select
-    import sys
+    import sys, termios, tty, threading
     from jarvis.voice import stt, tts
-
-    if prestarted:
-        stop_event, wav_result, rec_thread = prestarted
-    else:
-        stop_event, wav_result, rec_thread = _start_recording(model_size)
-
-    if on_listening:
-        on_listening()
-
-    # Put stdin in cbreak so any keypress (not just Enter) is detected
-    import termios, tty
-    text_input = None
-    old_settings = termios.tcgetattr(sys.stdin.fileno())
-    try:
-        tty.setcbreak(sys.stdin.fileno())
-        while rec_thread.is_alive():
-            ready, _, _ = _select.select([sys.stdin], [], [], 0.05)
-            if ready:
-                first_char = sys.stdin.read(1)
-                stop_event.set()
-                rec_thread.join(timeout=2.0)
-                # Restore normal line mode so the rest of the line echoes properly
-                termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_settings)
-                sys.stdout.write(f"\nYou: {first_char}")
-                sys.stdout.flush()
-                rest = sys.stdin.readline()
-                text_input = (first_char + rest).strip()
-                break
-    finally:
-        termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_settings)
-
-    if text_input is not None:
-        if not text_input:
-            if on_idle:
-                on_idle()
-            return None, _start_recording(model_size)
-        if on_thinking:
-            on_thinking(text_input)
-    else:
-        rec_thread.join()
-        wav = wav_result[0]
-        if wav is None:
-            return None, _start_recording(model_size)
-        text_input = stt.transcribe(wav, model_size=model_size)
-        if not text_input:
-            if on_idle:
-                on_idle()
-            return None, _start_recording(model_size)
-        if on_thinking:
-            on_thinking(text_input)
-
-    response = await loop.turn(text_input)
-    reply = response.text
-    if on_speaking:
-        on_speaking(reply)
-
-    # Start next recording NOW, before TTS plays — eliminates gap between turns
-    next_rec = _start_recording(model_size)
-
-    await tts.speak_async(reply, voice=tts_voice)
-    if on_idle:
-        on_idle()
-    return reply, next_rec
-
-
-async def voice_loop(offline: bool = False, use_memory: bool = True, no_hud: bool = False):
-    """Continuous voice mode: listen → transcribe → respond → speak."""
-    registry = _build_registry()
-
-    router = BrainRouter(offline=offline)
-    memory = ChatMemory() if use_memory else None
     from jarvis.core.config import load_config
-    config = load_config()
-    from jarvis.tools.context import LiveContext
-    live_context = LiveContext.from_config(config)
-    loop = AgentLoop(router=router, registry=registry, memory=memory, live_context=live_context)
 
-    audio_cfg = config.get("audio", {})
-    model_size = audio_cfg.get("stt_model", "base")
-    tts_voice = audio_cfg.get("tts_voice", "en-GB-RyanNeural")
-    ducking = float(audio_cfg.get("ducking_volume", 0.2))
+    loop = _build_loop()
+    cfg = load_config().get("audio", {})
+    model_size = cfg.get("stt_model", "tiny")
+    tts_voice  = cfg.get("tts_voice", "en-GB-RyanNeural")
 
-    from jarvis.voice.pipeline import voice_turn_async
-
-    # ── HUD ──────────────────────────────────────────────────────────────
     hud = None
     if not no_hud:
         try:
-            from jarvis.ui.hud import HUDController, load_theme_colors
-            hud = HUDController(colors=load_theme_colors(config))
-            console.print("[dim]HUD active.[/dim]")
+            from jarvis.ui.hud import HUDController
+            hud = HUDController()
         except Exception as e:
-            console.print(f"[dim]HUD unavailable ({e}), continuing without.[/dim]")
+            console.print(f"[dim]HUD unavailable: {e}[/dim]")
 
-    def _on_listening():
-        console.print("[dim]  🎙  recording...[/dim]")
-        if hud:
-            hud.listening()
+    def _start_rec():
+        stop_ev = threading.Event()
+        result  = [None]
+        def _rec(): result[0] = stt.record_until_silence()
+        t = threading.Thread(target=_rec, daemon=True)
+        t.start()
+        return stop_ev, result, t
 
-    def _on_thinking(t: str):
-        console.print(f"[bold green]You:[/bold green] {t}")
-        if hud:
-            hud.thinking(t)
-
-    def _on_speaking(r: str):
-        console.print(f"[bold cyan]J.A.R.V.I.S.[/bold cyan] >> {r}")
-        if hud:
-            hud.speaking(r)
-
-    def _on_idle():
-        if hud:
-            hud.idle()
-
-    console.print("[bold cyan]J.A.R.V.I.S.[/bold cyan] >> Voice mode active. Speak or type (Ctrl-C to exit).")
+    console.print("[bold cyan]J.A.R.V.I.S.[/bold cyan] >> Voice mode. Speak or type (Ctrl-C to exit).")
     next_rec = None
     try:
         while True:
+            stop_ev, result, rec_t = next_rec or _start_rec()
+            if hud: hud.listening()
+
+            # Race: mic vs keypress
+            text_input = None
+            old = termios.tcgetattr(sys.stdin.fileno())
             try:
-                console.print("[dim]Listening... (or type)[/dim]")
-                result = await _voice_or_chat_turn(
-                    loop, model_size, tts_voice,
-                    _on_listening, _on_thinking, _on_speaking, _on_idle,
-                    prestarted=next_rec,
-                )
-                reply, next_rec = result if isinstance(result, tuple) else (result, None)
-                if reply is None:
-                    console.print("[dim]  (nothing heard)[/dim]")
-            except KeyboardInterrupt:
-                raise
-            except Exception as e:
+                tty.setcbreak(sys.stdin.fileno())
+                while rec_t.is_alive():
+                    rdy, _, _ = _select.select([sys.stdin], [], [], 0.05)
+                    if rdy:
+                        ch = sys.stdin.read(1)
+                        stop_ev.set()
+                        rec_t.join(timeout=2.0)
+                        termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old)
+                        sys.stdout.write(f"\nYou: {ch}")
+                        sys.stdout.flush()
+                        rest = sys.stdin.readline()
+                        text_input = (ch + rest).strip()
+                        break
+            finally:
+                termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old)
+
+            if text_input is None:
+                rec_t.join()
+                wav = result[0]
+                if not wav:
+                    next_rec = None
+                    continue
+                text_input = stt.transcribe(wav, model_size=model_size).strip()
+
+            if not text_input:
                 next_rec = None
-                console.print(f"[bold red]Error:[/bold red] {e}")
-                if hud:
-                    hud.error(str(e))
+                continue
+
+            console.print(f"[bold green]You:[/bold green] {text_input}")
+            if hud: hud.thinking(text_input)
+
+            response = await loop.turn(text_input)
+            reply = response.text
+            console.print(f"[bold cyan]J.A.R.V.I.S.[/bold cyan] >> {reply}")
+            if hud: hud.speaking(reply)
+
+            # Start next recording BEFORE TTS plays
+            next_rec = _start_rec()
+
+            await tts.speak_async(reply, voice=tts_voice)
+            if hud: hud.idle()
+
     except KeyboardInterrupt:
         console.print("\n[bold cyan]J.A.R.V.I.S.[/bold cyan] >> Voice mode off.")
     finally:
-        if hud:
-            hud.stop()
+        if hud: hud.stop()
 
+
+# ── enroll ────────────────────────────────────────────────────────────────────
+
+async def enroll_voice():
+    """Record 10 seconds of the user's voice and save a voiceprint."""
+    from jarvis.voice.stt import record_until_silence
+    from jarvis.voice.verify import enroll
+    import io, wave
+    import numpy as np
+
+    console.print("[bold cyan]J.A.R.V.I.S.[/bold cyan] >> Speak for ~10 seconds to enroll your voice.")
+    console.print("[dim]Recording... (speak naturally)[/dim]")
+
+    # Record up to 10s
+    wav_bytes = record_until_silence(max_seconds=10.0, no_speech_timeout=12.0)
+
+    with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
+        raw = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
+    wav_f32 = raw.astype(np.float32) / 32768.0
+
+    enroll(wav_f32)
+    console.print("[bold green]Voiceprint saved.[/bold green] Only your voice will activate J.A.R.V.I.S.")
+
+
+# ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="J.A.R.V.I.S. Digital Assistant")
+    parser = argparse.ArgumentParser(description="J.A.R.V.I.S.")
     parser.add_argument(
         "command", nargs="?", default="chat",
-        help="chat | voice | daemon | ipc <CMD> | status",
+        help="chat | voice | start | stop | toggle | status | enroll",
     )
-    parser.add_argument("ipc_cmd", nargs="?", help="IPC command for 'ipc' subcommand")
-    parser.add_argument("--offline",   action="store_true", help="Use local Ollama model only")
-    parser.add_argument("--no-memory", action="store_true", help="Don't load or save chat history")
-    parser.add_argument("--no-hud",    action="store_true", help="Disable the HUD overlay")
-    parser.add_argument("--log-level", default="INFO",      help="Logging level for daemon mode")
+    parser.add_argument("--no-hud",    action="store_true")
+    parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args()
     load_env()
 
     if args.command == "chat":
-        asyncio.run(interactive_chat(offline=args.offline, use_memory=not args.no_memory))
+        asyncio.run(interactive_chat())
+
     elif args.command == "voice":
-        asyncio.run(voice_loop(offline=args.offline, use_memory=not args.no_memory, no_hud=args.no_hud))
-    elif args.command == "daemon":
+        asyncio.run(voice_loop(no_hud=args.no_hud))
+
+    elif args.command in ("start", "daemon"):
         from jarvis.daemon import main_daemon
-        main_daemon(offline=args.offline, use_memory=not args.no_memory,
-                    no_hud=args.no_hud, log_level=args.log_level)
-    elif args.command == "ipc":
+        main_daemon(no_hud=args.no_hud, log_level=args.log_level)
+
+    elif args.command == "stop":
         from jarvis.daemon import send_ipc
-        cmd = (args.ipc_cmd or "PING").upper()
-        console.print(send_ipc(cmd))
+        console.print(send_ipc("QUIT"))
+
+    elif args.command == "toggle":
+        from jarvis.daemon import send_ipc
+        console.print(send_ipc("TOGGLE"))
+
     elif args.command == "status":
         from jarvis.daemon import send_ipc
         resp = send_ipc("PING")
         if resp == "PONG":
             console.print("[bold green]Daemon running[/bold green]")
         else:
-            console.print(f"[yellow]Daemon not running[/yellow] ({resp})")
+            console.print(f"[yellow]Daemon not running[/yellow]")
+
+    elif args.command == "enroll":
+        asyncio.run(enroll_voice())
+
     else:
         console.print(f"Unknown command: {args.command}")
 

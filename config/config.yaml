@@ -1,37 +1,7 @@
-# J.A.R.V.I.S. Core Configuration
-llm:
-  default_provider: nvidia
-  models:
-    fast: meta/llama-3.3-70b-instruct
-    code: claude-3-5-sonnet
-    vision: gemini-3.5-flash
-    vision_fallback: gemini-3.1-flash-lite
-    vision_offline: gemma3:4b
-    offline: qwen2.5:7b
-  # Ordered fallback chain — exhausts each quota before moving on
-  fast_fallbacks:
-    - provider: nvidia
-      model: nvidia/llama-3.1-nemotron-70b-instruct
-    - provider: nvidia
-      model: meta/llama-3.1-8b-instruct
-    - provider: openrouter
-      model: nvidia/nemotron-3.5-lightning:free
-    - provider: openrouter
-      model: nvidia/nemotron-3-super-120b-a12b:free
-    - provider: openrouter
-      model: google/gemma-4-31b-it:free
-
-# Token savers (measured): low = ~264 tokens per image vs ~1100 default;
-# minimal thinking = 0 thinking tokens. Use medium if small text is misread.
-gemini:
-  media_resolution: low        # low | medium | high
-  thinking_level: none         # none | minimal | low | medium | high (none = fastest, no thinking tokens)
-  max_output_tokens: 1024
-
+# J.A.R.V.I.S. Configuration
 audio:
   stt_model: tiny
   tts_voice: en-GB-RyanNeural
-  ducking_volume: 0.2
 
 system:
   workspace_preset: default
