@@ -27,7 +27,7 @@ async def speak_async(text: str, voice: str = "en-GB-RyanNeural") -> None:
 
     try:
         data, samplerate = sf.read(tmp_path, dtype="float32")
-        sd.play(data, samplerate)
+        sd.play(data, samplerate, device="pulse")
         sd.wait()
     finally:
         os.unlink(tmp_path)

@@ -13,9 +13,10 @@ import sounddevice as sd
 _SAMPLE_RATE = 16000
 _CHANNELS = 1
 _DTYPE = "int16"
-_SILENCE_THRESHOLD = 500    # RMS below this = silence
+_SILENCE_THRESHOLD = 200    # RMS below this = silence
 _SILENCE_SECONDS = 1.5      # stop after this many silent seconds
 _MAX_SECONDS = 30           # hard cap
+_NO_SPEECH_TIMEOUT = 5.0    # bail out if nothing heard within this many seconds
 
 
 def _rms(chunk: np.ndarray) -> float:
@@ -26,6 +27,7 @@ def record_until_silence(
     silence_threshold: int = _SILENCE_THRESHOLD,
     silence_seconds: float = _SILENCE_SECONDS,
     max_seconds: float = _MAX_SECONDS,
+    no_speech_timeout: float = _NO_SPEECH_TIMEOUT,
 ) -> bytes:
     """Record from the default mic, stop on silence. Returns WAV bytes."""
     block_size = int(_SAMPLE_RATE * 0.1)  # 100ms chunks
@@ -37,6 +39,7 @@ def record_until_silence(
         q.put(indata.copy())
 
     with sd.InputStream(
+        device="pulse",
         samplerate=_SAMPLE_RATE,
         channels=_CHANNELS,
         dtype=_DTYPE,
@@ -46,8 +49,10 @@ def record_until_silence(
         silent_chunks = 0
         silence_limit = int(silence_seconds / 0.1)
         max_chunks = int(max_seconds / 0.1)
+        no_speech_limit = int(no_speech_timeout / 0.1)
         total = 0
         started = False
+        pre_speech_chunks = 0
 
         while total < max_chunks:
             chunk = q.get()
@@ -61,6 +66,10 @@ def record_until_silence(
                 silent_chunks += 1
                 if silent_chunks >= silence_limit:
                     break
+            else:
+                pre_speech_chunks += 1
+                if pre_speech_chunks >= no_speech_limit:
+                    break  # nothing heard, give up early
 
     raw = np.concatenate(buf, axis=0)
     wav_buf = io.BytesIO()
