@@ -20,8 +20,18 @@ def _num(text: str) -> Optional[int]:
     return int(m.group()) if m else None
 
 
+_FILLER = re.compile(r"^(?:(?:hey|ok|okay)\s+)?(?:jarvis\s+)?(?:(?:please|can you|could you)\s+)?")
+
+
+def _normalize(text: str) -> str:
+    t = re.sub(r"[^\w\s%]", " ", text.lower())
+    t = re.sub(r"\s+", " ", t).strip()
+    t = _FILLER.sub("", t)
+    return re.sub(r"\s+please$", "", t).strip()
+
+
 async def _dispatch(text: str) -> Optional[str]:
-    t = text.lower().strip()
+    t = _normalize(text)
 
     # ── short aliases: "bright 50", "vol 30", "vol up", "lock" ───────────
     _short = re.match(r'^(bright|brightness|vol|volume)\s*(\d+)$', t)
@@ -31,9 +41,8 @@ async def _dispatch(text: str) -> Optional[str]:
             return await _set_brightness(val)
         return await _set_volume(val)
 
-    if t in ("lock", "lock screen", "lock pc"):
-        subprocess.Popen(["hyprlock"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return "Locking screen."
+    if re.fullmatch(r"(lock|log|look)( (it|up|screen|the screen|my screen|pc|computer|laptop|the laptop|my laptop))?", t):
+        return _lock()
 
     if t in ("mute", "unmute"):
         flag = "1" if t == "mute" else "0"
@@ -85,31 +94,9 @@ async def _dispatch(text: str) -> Optional[str]:
             return await _set_volume(n)
 
     # ── open apps ────────────────────────────────────────────────────────
-    app_map = {
-        "spotify": "spotify",
-        "firefox": "firefox",
-        "chrome": "google-chrome-stable",
-        "browser": "xdg-open https://",
-        "terminal": "xdg-terminal-exec",
-        "files": "nautilus",
-        "file manager": "nautilus",
-        "obsidian": "obsidian",
-        "discord": "discord",
-        "telegram": "telegram-desktop",
-        "signal": "signal-desktop",
-        "code": "code",
-        "vscode": "code",
-        "settings": "gnome-control-center",
-    }
-    if any(w in t for w in ("open", "launch", "start", "run")):
-        for keyword, cmd in app_map.items():
-            if keyword in t:
-                try:
-                    subprocess.Popen(cmd.split(), start_new_session=True,
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    return f"Opening {keyword}."
-                except FileNotFoundError:
-                    return f"{keyword} doesn't seem to be installed."
+    m = re.match(r"^(?:open|launch|start|run)\s+(?:the\s+|my\s+)?(.+?)(?:\s+app)?$", t)
+    if m:
+        return _open_app(m.group(1))
 
     # ── screenshot ───────────────────────────────────────────────────────
     if "screenshot" in t:
@@ -118,11 +105,68 @@ async def _dispatch(text: str) -> Optional[str]:
         return "Screenshot taken."
 
     # ── lock / sleep ─────────────────────────────────────────────────────
-    if "lock" in t and ("screen" in t or "computer" in t or t == "lock"):
-        subprocess.Popen(["hyprlock"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return "Locking screen."
+    if re.search(r"\b(lock|log|look)\b", t) and any(w in t for w in ("screen", "computer", "laptop", " pc")):
+        return _lock()
 
     return None  # not handled — fall through to Claude
+
+
+_APP_ALIASES = {
+    "browser": "brave", "web browser": "brave", "internet": "brave",
+    "files": "nautilus", "file manager": "nautilus",
+    "code": "visual studio code", "vs code": "visual studio code", "vscode": "visual studio code",
+}
+
+
+def _desktop_apps() -> dict[str, str]:
+    """Map lowercase app name / desktop id -> desktop id, from installed .desktop files."""
+    import os
+    from pathlib import Path
+    dirs = [Path.home() / ".local/share/applications", Path("/usr/share/applications"),
+            Path("/var/lib/flatpak/exports/share/applications")]
+    apps: dict[str, str] = {}
+    for d in dirs:
+        if not d.is_dir():
+            continue
+        for f in d.glob("*.desktop"):
+            try:
+                text = f.read_text(errors="ignore")
+            except OSError:
+                continue
+            entry = text.split("[Desktop Action")[0]
+            if re.search(r"^NoDisplay=true", entry, re.M):
+                continue
+            name = re.search(r"^Name=(.+)$", entry, re.M)
+            if name:
+                apps.setdefault(name.group(1).strip().lower(), f.name)
+            apps.setdefault(f.stem.lower(), f.name)
+    return apps
+
+
+def _open_app(query: str) -> Optional[str]:
+    q = _APP_ALIASES.get(query, query)
+    if q in ("terminal", "a terminal"):
+        subprocess.Popen(["uwsm", "app", "--", "xdg-terminal-exec"], start_new_session=True,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return "Opening terminal."
+    apps = _desktop_apps()
+    desktop = apps.get(q)
+    if not desktop:
+        hits = sorted((n for n in apps if q in n), key=len)
+        desktop = apps[hits[0]] if hits else None
+    if not desktop:
+        return None  # unknown app: let Claude answer
+    subprocess.Popen(["uwsm", "app", "--", desktop], start_new_session=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return f"Opening {query}."
+
+
+def _lock() -> str:
+    """Pause all media (incl. browser videos via MPRIS), lock silently."""
+    subprocess.run(["playerctl", "-a", "pause"], capture_output=True)
+    subprocess.Popen(["omarchy-system-lock"], start_new_session=True,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return ""
 
 
 async def _set_brightness(pct: int) -> str:

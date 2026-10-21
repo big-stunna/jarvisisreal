@@ -12,9 +12,9 @@ from jarvis.core.models import ChatMessage, JarvisResponse, MessageRole
 
 
 SYSTEM_PROMPT = (
-    "You are J.A.R.V.I.S., a terse and capable AI assistant with a British accent. "
-    "You speak like the Iron Man J.A.R.V.I.S. — confident, dry wit, extremely concise. "
-    "Never say you're an AI. Answer in 1-3 sentences unless more is genuinely needed."
+    "You are J.A.R.V.I.S., a British AI assistant like Iron Man's JARVIS. "
+    "Be quick and precise: answer in one short sentence, two at most, unless asked for detail. "
+    "No filler, no preamble, no markdown — your reply is spoken aloud."
 )
 
 
@@ -34,11 +34,9 @@ class ClaudeCliProvider:
 
         # Build prompt: system + conversation history collapsed into one string
         parts: list[str] = []
-        system_injected = False
-        for m in messages:
+        for m in messages[-12:]:
             if m.role == MessageRole.SYSTEM:
-                parts.append(f"[System: {m.content}]")
-                system_injected = True
+                continue
             elif m.role == MessageRole.USER:
                 content = m.content if isinstance(m.content, str) else str(m.content)
                 parts.append(f"User: {content}")
@@ -48,15 +46,19 @@ class ClaudeCliProvider:
             elif m.role == MessageRole.TOOL:
                 parts.append(f"[Tool result: {m.content}]")
 
-        if not system_injected:
-            parts.insert(0, f"[System: {SYSTEM_PROMPT}]")
-
         prompt = "\n".join(parts)
 
         try:
             proc = await asyncio.create_subprocess_exec(
                 "claude", "-p", prompt,
-                "--allowedTools", "",   # disable all tools — pure Q&A
+                "--model", model or "haiku",
+                "--system-prompt", SYSTEM_PROMPT,
+                "--tools", "",
+                "--strict-mcp-config",
+                "--no-session-persistence",
+                "--setting-sources", "",   # skip user hooks/plugins: halves startup time
+                stdin=asyncio.subprocess.DEVNULL,
+                cwd="/tmp",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -79,3 +81,4 @@ def provider_available(name: str) -> bool:
     if name == "claude-cli":
         return bool(shutil.which("claude"))
     return False
+

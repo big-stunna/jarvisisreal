@@ -134,36 +134,13 @@ async def voice_loop(no_hud: bool = False):
         if hud: hud.stop()
 
 
-# ── enroll ────────────────────────────────────────────────────────────────────
-
-async def enroll_voice():
-    """Record 10 seconds of the user's voice and save a voiceprint."""
-    from jarvis.voice.stt import record_until_silence
-    from jarvis.voice.verify import enroll
-    import io, wave
-    import numpy as np
-
-    console.print("[bold cyan]J.A.R.V.I.S.[/bold cyan] >> Speak for ~10 seconds to enroll your voice.")
-    console.print("[dim]Recording... (speak naturally)[/dim]")
-
-    # Record up to 10s
-    wav_bytes = record_until_silence(max_seconds=10.0, no_speech_timeout=12.0)
-
-    with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
-        raw = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
-    wav_f32 = raw.astype(np.float32) / 32768.0
-
-    enroll(wav_f32)
-    console.print("[bold green]Voiceprint saved.[/bold green] Only your voice will activate J.A.R.V.I.S.")
-
-
 # ── main ──────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser(description="J.A.R.V.I.S.")
     parser.add_argument(
         "command", nargs="?", default="chat",
-        help="chat | voice | start | stop | toggle | status | enroll",
+        help="chat | voice | start | stop | toggle | status | gui | ask",
     )
     parser.add_argument("--no-hud",    action="store_true")
     parser.add_argument("--log-level", default="INFO")
@@ -192,12 +169,11 @@ def main():
         from jarvis.daemon import send_ipc
         resp = send_ipc("PING")
         if resp == "PONG":
-            console.print("[bold green]Daemon running[/bold green]")
+            state = send_ipc("STATE")
+            console.print(f"[bold green]Daemon running[/bold green] — wake word {state.lower()}")
         else:
             console.print(f"[yellow]Daemon not running[/yellow]")
 
-    elif args.command == "enroll":
-        asyncio.run(enroll_voice())
 
     elif args.command == "gui":
         from jarvis.ui.chat_window import launch

@@ -101,7 +101,11 @@ class _VoiceWorker(QThread):
     def run(self):
         try:
             from jarvis.voice.stt import record_until_silence, transcribe
-            self.transcribed.emit(transcribe(record_until_silence()).strip())
+            wav = record_until_silence()
+            if not wav:
+                self.transcribed.emit("")
+                return
+            self.transcribed.emit(transcribe(wav).strip())
         except Exception as e: self.error_signal.emit(str(e))
 
 
@@ -265,13 +269,13 @@ class JarvisWindow(QWidget):
         self._worker.response_ready.connect(self._on_response)
         self._worker.error_signal.connect(self._on_error)
         self._worker.finished.connect(lambda: setattr(self, '_worker', None))
-        self._worker.start()
+        _keep(self._worker).start()
 
     def _on_response(self, text):
         self._thinking_timer.stop()
         self._send_btn.setEnabled(True)
         self._status.setText("ready")
-        self._append("jarvis", text)
+        if text: self._append("jarvis", text)
 
     def _on_error(self, err):
         self._thinking_timer.stop()
@@ -292,7 +296,7 @@ class JarvisWindow(QWidget):
         self._voice_worker.transcribed.connect(self._on_transcribed)
         self._voice_worker.error_signal.connect(self._on_error)
         self._voice_worker.finished.connect(self._voice_done)
-        self._voice_worker.start()
+        _keep(self._voice_worker).start()
 
     def _on_transcribed(self, text):
         if text: self._input.setText(text); self._send()
@@ -302,6 +306,23 @@ class JarvisWindow(QWidget):
         self._mic.style().unpolish(self._mic); self._mic.style().polish(self._mic)
         self._voice_worker = None
         if not self._worker: self._status.setText("ready")
+
+
+_live_threads: set = set()
+
+
+def _keep(thread):
+    _live_threads.add(thread)
+    thread.finished.connect(lambda: _live_threads.discard(thread))
+    return thread
+
+
+def _close_event(self, event):
+    import os
+    os._exit(0)  # worker threads blocked on mic/subprocess would keep the process alive
+
+
+JarvisWindow.closeEvent = _close_event
 
 
 def launch():

@@ -36,6 +36,7 @@ class WakeWordDetector:
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._oww = None
+        self.paused = False
 
     def start(self) -> None:
         self._stop_event.clear()
@@ -52,8 +53,11 @@ class WakeWordDetector:
             self._thread.join(timeout=3)
 
     def _load_model(self):
+        import os, openwakeword
         from openwakeword.model import Model
-        return Model(wakeword_models=[self._model_name], inference_framework="onnx")
+        path = os.path.join(os.path.dirname(openwakeword.__file__),
+                            "resources", "models", f"{self._model_name}_v0.1.onnx")
+        return Model(wakeword_model_paths=[path])
 
     def _run(self) -> None:
         import sounddevice as sd
@@ -75,11 +79,12 @@ class WakeWordDetector:
             ) as stream:
                 while not self._stop_event.is_set():
                     audio, _ = stream.read(_CHUNK)
-                    audio_f32 = audio.flatten().astype(np.float32) / 32768.0
-                    oww.predict(audio_f32)
-                    scores = oww.prediction_buffer.get(self._model_name, [])
-                    if scores and scores[-1] >= self._threshold:
-                        log.info("Wake word detected (score=%.3f)", scores[-1])
+                    if self.paused:
+                        continue
+                    preds = oww.predict(audio.flatten())  # expects raw int16 PCM
+                    score = max(preds.values()) if preds else 0.0
+                    if score >= self._threshold:
+                        log.info("Wake word detected (score=%.3f)", score)
                         oww.reset()
                         self._on_wake()
         except Exception as e:

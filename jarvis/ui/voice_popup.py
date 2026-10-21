@@ -33,6 +33,13 @@ def _is_close(text: str) -> bool:
     return t in _CLOSE_PHRASES or any(t.startswith(p) for p in _CLOSE_PHRASES)
 
 
+import logging
+from pathlib import Path
+_LOG = Path.home() / ".local/share/jarvis/popup.log"
+logging.basicConfig(filename=_LOG, level=logging.INFO, format="%(asctime)s %(message)s")
+log = logging.getLogger("jarvis.popup")
+
+
 # ── orb animation ─────────────────────────────────────────────────────────────
 
 class _Orb(QWidget):
@@ -101,7 +108,13 @@ class _VoiceWorker(QThread):
     def run(self):
         try:
             from jarvis.voice.stt import record_until_silence, transcribe
-            self.transcribed.emit(transcribe(record_until_silence()).strip())
+            log.info("recording…")
+            wav = record_until_silence()
+            log.info("recorded %d bytes", len(wav or b""))
+            if not wav:
+                self.transcribed.emit("")
+                return
+            self.transcribed.emit(transcribe(wav).strip())
         except Exception as e:
             self.error.emit(str(e))
 
@@ -153,6 +166,47 @@ class _TTSWorker(QThread):
             self._proc.kill()
 
 
+def _start_stall_logger(widget):
+    """Log whenever the UI thread stops responding for over a second."""
+    import threading, time, traceback
+    beat = [time.monotonic()]
+    t = QTimer(widget); t.timeout.connect(lambda: beat.__setitem__(0, time.monotonic())); t.start(100)
+    widget._beat_timer = t
+    main = threading.main_thread()
+    def watch():
+        reported = False
+        while True:
+            time.sleep(0.25)
+            gap = time.monotonic() - beat[0]
+            if gap > 1.0 and not reported:
+                stack = "".join(traceback.format_stack(sys._current_frames()[main.ident])[-6:])
+                log.warning("UI stalled %.1fs, main thread at:\n%s", gap, stack)
+                reported = True
+            elif gap < 0.3:
+                reported = False
+    threading.Thread(target=watch, daemon=True).start()
+
+
+def _screen_locked() -> bool:
+    return subprocess.run(["pgrep", "-x", "hyprlock"], capture_output=True).returncode == 0
+
+
+def _hard_exit():
+    """Exit now: worker threads may be blocked on the mic and would keep the process alive."""
+    import os
+    os._exit(0)
+
+
+_live_threads: set = set()
+
+
+def _keep(thread: QThread) -> QThread:
+    """Hold a reference until the thread has fully finished; Qt aborts if a running QThread is freed."""
+    _live_threads.add(thread)
+    thread.finished.connect(lambda: _live_threads.discard(thread))
+    return thread
+
+
 # ── popup window ──────────────────────────────────────────────────────────────
 
 class VoicePopup(QWidget):
@@ -174,6 +228,17 @@ class VoicePopup(QWidget):
         self._position()
         self._fade_in()
         QTimer.singleShot(200, self._listen)  # start listening after fade
+        import threading
+        from jarvis.voice.stt import _get_model, DEFAULT_MODEL
+        threading.Thread(target=_get_model, args=(DEFAULT_MODEL,), daemon=True).start()
+        self._lock_watch = QTimer(self)
+        self._lock_watch.timeout.connect(self._check_locked)
+        self._lock_watch.start(1000)
+        _start_stall_logger(self)
+
+    def _check_locked(self):
+        if _screen_locked():
+            _hard_exit()
 
     def _build(self):
         self.setWindowFlags(
@@ -235,6 +300,7 @@ class VoicePopup(QWidget):
         t.timeout.connect(_s); t.start(16)
 
     def _dismiss(self):
+        log.info("dismiss")
         if self._closing: return
         self._closing = True
         # Kill any ongoing TTS immediately
@@ -247,10 +313,14 @@ class VoicePopup(QWidget):
             self._opacity = max(0.0, self._opacity - 0.09)
             self.setWindowOpacity(self._opacity)
             if self._opacity <= 0.0:
-                t.stop(); self.close()
-                app = QApplication.instance()
-                if app: app.quit()
+                t.stop(); _hard_exit()
         t.timeout.connect(_s); t.start(16)
+        QTimer.singleShot(400, _hard_exit)
+
+    def closeEvent(self, event):
+        if self._tw:
+            self._tw.kill()
+        _hard_exit()
 
     def _listen(self):
         if self._closing: return
@@ -259,13 +329,13 @@ class VoicePopup(QWidget):
         self._vw = _VoiceWorker()
         self._vw.transcribed.connect(self._on_transcribed)
         self._vw.error.connect(self._on_error)
-        self._vw.start()
+        _keep(self._vw).start()
 
     def _on_transcribed(self, text: str):
+        log.info("heard: %r", text)
         if self._closing: return
         if not text:
-            self._status.setText("Didn't catch that.")
-            QTimer.singleShot(600, self._listen)
+            QTimer.singleShot(300, self._listen)
             return
         if _is_close(text):
             self._dismiss(); return
@@ -275,17 +345,20 @@ class VoicePopup(QWidget):
         self._bw = _BrainWorker(self._agent, text)
         self._bw.answered.connect(self._on_answered)
         self._bw.error.connect(self._on_error)
-        self._bw.start()
+        _keep(self._bw).start()
 
     def _on_answered(self, reply: str):
+        log.info("reply: %r", reply)
         if self._closing: return
+        if not reply:
+            self._dismiss(); return
         display = reply if len(reply) <= 90 else reply[:87] + "…"
         self._status.setText(display)
         self._reply.setText("")
         self._orb.set_state("speaking")
         self._tw = _TTSWorker(reply, self._voice)
         self._tw.done.connect(self._after_speaking)
-        self._tw.start()
+        _keep(self._tw).start()
 
     def _after_speaking(self):
         self._tw = None
@@ -293,6 +366,7 @@ class VoicePopup(QWidget):
         QTimer.singleShot(500, self._listen)
 
     def _on_error(self, err: str):
+        log.error("error: %s", err)
         if self._closing: return
         self._status.setText("Error — try again")
         self._reply.setText(err[:60])
@@ -302,23 +376,37 @@ class VoicePopup(QWidget):
 
 # ── single-instance guard ─────────────────────────────────────────────────────
 
+_LOCK_PATH = "/run/user/%d/jarvis-ask.lock"
+_lock_fd = None
+
+
 def _already_running() -> bool:
-    """Returns True if another jarvis ask process is already running."""
+    """True if another popup holds the lock (released automatically when it exits)."""
+    import fcntl, os
     try:
-        r = subprocess.run(
-            ["pgrep", "-f", "jarvis ask"],
-            capture_output=True, text=True
-        )
-        pids = [p for p in r.stdout.strip().split("\n") if p]
-        import os
-        return len(pids) > 1 or (len(pids) == 1 and int(pids[0]) != os.getpid())
-    except Exception:
+        fd = os.open(_LOCK_PATH % os.getuid(), os.O_RDWR | os.O_CREAT, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+        return False
+    except BlockingIOError:
+        return True
+
+
+def _acquire_lock() -> bool:
+    global _lock_fd
+    import fcntl, os
+    _lock_fd = os.open(_LOCK_PATH % os.getuid(), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except BlockingIOError:
         return False
 
 
 def launch():
-    if _already_running():
-        return  # silently exit — one instance only
+    if not _acquire_lock():
+        return  # one instance only
 
     from jarvis.core.config import load_env, load_config
     load_env()

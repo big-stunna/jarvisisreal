@@ -1,6 +1,6 @@
 # J.A.R.V.I.S. Configuration
 audio:
-  stt_model: tiny
+  stt_model: base.en
   tts_voice: en-GB-RyanNeural
 
 system:

@@ -4,7 +4,7 @@ J.A.R.V.I.S. daemon — always-on background process.
 Flow:
   boot → idle (silent)
   SIGUSR1 / IPC TOGGLE → enabled ↔ disabled  (sticky)
-  enabled + wake word "hey jarvis" → verify speaker → STT → Claude → TTS
+  enabled + wake word "hey jarvis" → STT → Claude → TTS
   SIGTERM / IPC QUIT → clean shutdown
 
 Toggle is sticky: once disabled, stays off until toggled again.
@@ -15,7 +15,9 @@ import asyncio
 import logging
 import os
 import signal
+import sys
 import socket
+import subprocess
 import threading
 from pathlib import Path
 from typing import Optional
@@ -41,7 +43,8 @@ class IPCServer:
 
     def __init__(self, loop: asyncio.AbstractEventLoop,
                  shutdown_event: asyncio.Event,
-                 toggle_cb):
+                 toggle_cb, state_cb=lambda: True):
+        self._state_cb = state_cb
         self._loop = loop
         self._shutdown_event = shutdown_event
         self._toggle_cb = toggle_cb
@@ -83,6 +86,8 @@ class IPCServer:
     def _handle(self, cmd: str) -> str:
         if cmd == "PING":
             return "PONG"
+        if cmd == "STATE":
+            return "ENABLED" if self._state_cb() else "DISABLED"
         if cmd == "TOGGLE":
             self._loop.call_soon_threadsafe(self._toggle_cb)
             return "OK"
@@ -108,28 +113,14 @@ def send_ipc(cmd: str) -> str:
 # ── voice turn ────────────────────────────────────────────────────────────────
 
 async def _do_voice_turn(agent_loop, hud, model_size: str, tts_voice: str) -> None:
-    """Record → verify → transcribe → Claude → speak."""
-    import io, wave
+    """Record → transcribe → Claude → speak."""
     import numpy as np
     from jarvis.voice import stt, tts as tts_mod
-    from jarvis.voice.verify import verify
 
     if hud: hud.listening()
 
     wav_bytes = stt.record_until_silence()
     if not wav_bytes:
-        if hud: hud.idle()
-        return
-
-    # Decode WAV bytes → float32 numpy for speaker verification
-    with wave.open(io.BytesIO(wav_bytes), "rb") as wf:
-        raw = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16)
-    wav_f32 = raw.astype(np.float32) / 32768.0
-
-    # Speaker verification
-    accepted, score = verify(wav_f32)
-    if not accepted:
-        log.info("Voice rejected (similarity=%.3f)", score)
         if hud: hud.idle()
         return
 
@@ -145,6 +136,9 @@ async def _do_voice_turn(agent_loop, hud, model_size: str, tts_voice: str) -> No
     reply = response.text.strip()
     log.info("J.A.R.V.I.S.: %s", reply)
 
+    if not reply:
+        if hud: hud.idle()
+        return
     if hud: hud.speaking(reply)
     await tts_mod.speak_async(reply, voice=tts_voice)
     if hud: hud.idle()
@@ -198,10 +192,12 @@ async def run_daemon(no_hud: bool = False, log_level: str = "INFO") -> None:
         if enabled:
             log.info("Jarvis ENABLED")
             play_on()
+            subprocess.Popen(["notify-send", "-t", "1500", "Jarvis", "Wake word on"])
             if hud: hud.idle()
         else:
             log.info("Jarvis DISABLED")
             play_off()
+            subprocess.Popen(["notify-send", "-t", "1500", "Jarvis", "Wake word off"])
             if hud: hud.idle()
 
     def _handle_signal(*_):
@@ -213,7 +209,7 @@ async def run_daemon(no_hud: bool = False, log_level: str = "INFO") -> None:
     # SIGUSR1 = toggle
     loop.add_signal_handler(signal.SIGUSR1, _toggle)
 
-    ipc = IPCServer(loop, shutdown_event, _toggle)
+    ipc = IPCServer(loop, shutdown_event, _toggle, lambda: enabled)
     ipc.start()
 
     # ── wake word ─────────────────────────────────────────────────────────
@@ -238,14 +234,31 @@ async def run_daemon(no_hud: bool = False, log_level: str = "INFO") -> None:
             except asyncio.TimeoutError:
                 continue
             _voice_event.clear()
-            if enabled:
-                try:
-                    await _do_voice_turn(agent_loop, hud, model_size, tts_voice)
-                except Exception as e:
-                    log.error("Voice turn error: %s", e)
-                    if hud: hud.error(str(e))
-                    await asyncio.sleep(0.5)
-                    if hud: hud.idle()
+            if not enabled:
+                log.info("Wake ignored: disabled (SUPER+ALT+J to enable)")
+                continue
+            from jarvis.ui.voice_popup import _already_running, _screen_locked
+            if _screen_locked():
+                log.info("Wake ignored: screen locked")
+                continue
+            if _already_running():
+                log.info("Wake ignored: popup already open")
+                continue
+            if wake: wake.paused = True
+            try:
+                play_on()
+                log.info("Opening voice popup")
+                proc = await asyncio.create_subprocess_exec(
+                    str(Path(sys.executable).parent / "jarvis"), "ask",
+                    stderr=asyncio.subprocess.DEVNULL)
+                await proc.wait()
+                log.info("Popup closed (exit %s)", proc.returncode)
+            except Exception as e:
+                log.error("Popup launch error: %s", e)
+            finally:
+                await asyncio.sleep(1.0)
+                if wake: wake.paused = False
+
     finally:
         if wake: wake.stop()
         ipc.stop()

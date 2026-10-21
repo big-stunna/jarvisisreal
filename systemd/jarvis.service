@@ -4,7 +4,7 @@ After=graphical-session.target pipewire.service
 
 [Service]
 Type=simple
-ExecStart=%h/jarvis/.venv/bin/jarvis start
+ExecStart=%h/jarvis/.venv/bin/jarvis start --no-hud
 Restart=on-failure
 RestartSec=5
 Environment=DISPLAY=:0

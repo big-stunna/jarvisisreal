@@ -17,10 +17,7 @@ class AgentLoop:
         router=None,          # kept for API compat, unused
         registry: Optional[ToolRegistry] = None,
         providers: Optional[dict] = None,
-        system_prompt: str = (
-            "You are J.A.R.V.I.S., a terse AI assistant. Speak like Iron Man's JARVIS — "
-            "confident, dry British wit, 1-3 sentences max."
-        ),
+        system_prompt: str = "",
         memory: Optional[ChatMemory] = None,
         history_limit: int = 20,
         live_context=None,    # kept for API compat, unused

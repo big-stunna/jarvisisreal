@@ -13,9 +13,9 @@ import sounddevice as sd
 _SAMPLE_RATE = 16000
 _CHANNELS = 1
 _DTYPE = "int16"
-_SILENCE_THRESHOLD = 200    # RMS below this = silence
-_SILENCE_SECONDS = 1.5      # stop after this many silent seconds
-_MAX_SECONDS = 30           # hard cap
+_SILENCE_THRESHOLD = 200    # minimum RMS counted as speech; raised to fit room noise
+_SILENCE_SECONDS = 1.0      # stop after this many silent seconds
+_MAX_SECONDS = 15           # hard cap
 _NO_SPEECH_TIMEOUT = 5.0    # bail out if nothing heard within this many seconds
 
 
@@ -54,6 +54,7 @@ def record_until_silence(
         total = 0
         started = False
         pre_speech_chunks = 0
+        noise: list[float] = []
 
         while total < max_chunks:
             if stop_event and stop_event.is_set():
@@ -62,7 +63,11 @@ def record_until_silence(
             buf.append(chunk)
             total += 1
             rms = _rms(chunk)
-            if rms > silence_threshold:
+            if total <= 3:
+                noise.append(rms)  # first 300 ms: measure room noise floor
+                continue
+            threshold = max(silence_threshold, min(noise) * 2.2)
+            if rms > threshold:
                 started = True
                 silent_chunks = 0
             elif started:
@@ -84,13 +89,19 @@ def record_until_silence(
     return wav_buf.getvalue()
 
 
-def transcribe(wav_bytes: bytes, model_size: str = "base") -> str:
+_PROMPT = ("Jarvis, lock the screen. Volume 50. Brightness 30. Mute. "
+           "Open Spotify, Discord, Obsidian, Chrome, terminal. Take a screenshot.")
+DEFAULT_MODEL = "base.en"
+
+
+def transcribe(wav_bytes: bytes, model_size: str = DEFAULT_MODEL) -> str:
     """Transcribe WAV bytes with faster-whisper. Returns stripped text."""
     from faster_whisper import WhisperModel  # lazy: heavy import
 
     model = _get_model(model_size)
     wav_buf = io.BytesIO(wav_bytes)
-    segments, _ = model.transcribe(wav_buf, language="en", beam_size=1)
+    segments, _ = model.transcribe(wav_buf, language="en", beam_size=3,
+                                   initial_prompt=_PROMPT, vad_filter=True)
     return " ".join(s.text for s in segments).strip()
 
 
@@ -99,8 +110,14 @@ _model_cache: dict[str, object] = {}
 
 def _get_model(size: str):
     if size not in _model_cache:
+        import os
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")  # skip network check once cached
         from faster_whisper import WhisperModel
-        _model_cache[size] = WhisperModel(size, device="cpu", compute_type="int8")
+        try:
+            _model_cache[size] = WhisperModel(size, device="cpu", compute_type="int8")
+        except Exception:
+            os.environ["HF_HUB_OFFLINE"] = "0"
+            _model_cache[size] = WhisperModel(size, device="cpu", compute_type="int8")
     return _model_cache[size]
 
 
