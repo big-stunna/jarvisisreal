@@ -1,162 +1,109 @@
 """
-J.A.R.V.I.S. floating chat window — Iron Man HUD aesthetic.
-Launched by SUPER+SHIFT+J. Supports both typed and voice input.
+J.A.R.V.I.S. chat window — minimal dark aesthetic.
 """
 from __future__ import annotations
 
 import asyncio
 import sys
-import threading
 from typing import Optional
 
-from PyQt6.QtCore import (
-    Qt, QTimer, QThread, pyqtSignal, QPropertyAnimation,
-    QEasingCurve, QPoint, pyqtProperty, QObject,
-)
-from PyQt6.QtGui import (
-    QColor, QFont, QPainter, QPen, QBrush, QKeySequence,
-    QShortcut, QTextCursor, QPalette,
-)
+from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QPoint
+from PyQt6.QtGui import QColor, QPainter, QPen, QKeySequence, QTextCursor
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
-    QTextEdit, QLineEdit, QPushButton, QLabel, QSizeGrip,
-    QFrame,
+    QTextEdit, QLineEdit, QPushButton, QLabel, QFrame,
 )
 
-# ── palette ───────────────────────────────────────────────────────────────────
-_BG       = "#050e1a"
-_BG2      = "#0a1628"
-_BLUE     = "#00d4ff"
-_BLUE_DIM = "#005566"
-_GOLD     = "#e2be8a"
-_TEXT     = "#c8eaf5"
-_DIM      = "#4a7a8a"
-_RED      = "#e25d6c"
-_BORDER   = "#0d2035"
+_BG     = "#111111"
+_BG2    = "#1a1a1a"
+_BORDER = "#2a2a2a"
+_TEXT   = "#eeeeee"
+_SUB    = "#555555"
+_ACCENT = "#ffffff"
+_MUTED  = "#333333"
+_RED    = "#cc4444"
 
-
-_STYLESHEET = f"""
-QWidget {{
-    background: {_BG};
-    color: {_TEXT};
-    font-family: 'JetBrains Mono', 'Fira Code', 'Monospace';
-    font-size: 13px;
-}}
-QFrame#container {{
-    background: {_BG};
-    border: 1px solid {_BLUE_DIM};
-    border-radius: 12px;
-}}
+_SS = f"""
+* {{ font-family: 'Inter', 'SF Pro Display', sans-serif; }}
+QWidget {{ background: {_BG}; color: {_TEXT}; font-size: 13px; }}
+QFrame#container {{ background: {_BG}; border: 1px solid {_BORDER}; border-radius: 14px; }}
 QTextEdit#history {{
-    background: {_BG2};
+    background: {_BG};
     border: none;
-    border-radius: 8px;
-    padding: 12px;
+    padding: 8px 4px;
     color: {_TEXT};
-    selection-background-color: {_BLUE_DIM};
+    font-size: 13px;
+    line-height: 1.6;
 }}
+QScrollBar:vertical {{ background: {_BG}; width: 4px; border-radius: 2px; }}
+QScrollBar::handle:vertical {{ background: {_BORDER}; border-radius: 2px; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QLineEdit#input {{
     background: {_BG2};
-    border: 1px solid {_BLUE_DIM};
-    border-radius: 6px;
-    padding: 8px 12px;
+    border: 1px solid {_BORDER};
+    border-radius: 8px;
+    padding: 10px 14px;
     color: {_TEXT};
     font-size: 13px;
 }}
-QLineEdit#input:focus {{
-    border: 1px solid {_BLUE};
-}}
+QLineEdit#input:focus {{ border-color: #444444; }}
 QPushButton#send_btn {{
-    background: {_BLUE_DIM};
-    border: 1px solid {_BLUE};
-    border-radius: 6px;
-    color: {_BLUE};
-    font-weight: bold;
-    padding: 8px 16px;
-    min-width: 60px;
-}}
-QPushButton#send_btn:hover {{
-    background: {_BLUE};
+    background: {_ACCENT};
+    border: none;
+    border-radius: 8px;
     color: {_BG};
+    font-weight: 600;
+    padding: 10px 18px;
+    font-size: 12px;
+    min-width: 56px;
 }}
+QPushButton#send_btn:hover {{ background: #dddddd; }}
+QPushButton#send_btn:disabled {{ background: {_MUTED}; color: {_SUB}; }}
 QPushButton#mic_btn {{
     background: {_BG2};
-    border: 1px solid {_BLUE_DIM};
-    border-radius: 6px;
-    color: {_DIM};
-    padding: 8px 12px;
+    border: 1px solid {_BORDER};
+    border-radius: 8px;
+    color: {_SUB};
+    padding: 10px;
+    font-size: 15px;
     min-width: 40px;
-    font-size: 16px;
+    max-width: 40px;
 }}
-QPushButton#mic_btn:hover {{
-    border-color: {_BLUE};
-    color: {_BLUE};
-}}
-QPushButton#mic_btn[recording="true"] {{
-    border-color: {_RED};
-    color: {_RED};
-    background: #1a0508;
-}}
+QPushButton#mic_btn:hover {{ border-color: #444; color: {_TEXT}; }}
+QPushButton#mic_btn[active="true"] {{ border-color: {_RED}; color: {_RED}; }}
 QPushButton#close_btn {{
     background: transparent;
     border: none;
-    color: {_DIM};
-    font-size: 16px;
-    padding: 2px 6px;
+    color: {_SUB};
+    font-size: 15px;
+    padding: 0 4px;
 }}
-QPushButton#close_btn:hover {{
-    color: {_RED};
-}}
-QLabel#title {{
-    color: {_BLUE};
-    font-weight: bold;
-    font-size: 11px;
-    letter-spacing: 3px;
-}}
-QLabel#status {{
-    color: {_DIM};
-    font-size: 10px;
-}}
+QPushButton#close_btn:hover {{ color: {_TEXT}; }}
+QLabel#title {{ color: {_TEXT}; font-size: 13px; font-weight: 600; background: transparent; }}
+QLabel#status {{ color: {_SUB}; font-size: 11px; background: transparent; }}
 """
 
-
-# ── worker thread for async Claude calls ─────────────────────────────────────
 
 class _Worker(QThread):
     response_ready = pyqtSignal(str)
     error_signal   = pyqtSignal(str)
-
-    def __init__(self, agent_loop, text: str):
-        super().__init__()
-        self._loop_obj = agent_loop
-        self._text = text
-
+    def __init__(self, agent, text):
+        super().__init__(); self._agent = agent; self._text = text
     def run(self):
-        async def _call():
-            r = await self._loop_obj.turn(self._text)
-            return r.text
-        try:
-            result = asyncio.run(_call())
-            self.response_ready.emit(result)
-        except Exception as e:
-            self.error_signal.emit(str(e))
+        async def _c(): return (await self._agent.turn(self._text)).text
+        try:    self.response_ready.emit(asyncio.run(_c()))
+        except Exception as e: self.error_signal.emit(str(e))
 
 
 class _VoiceWorker(QThread):
     transcribed  = pyqtSignal(str)
     error_signal = pyqtSignal(str)
-
     def run(self):
         try:
             from jarvis.voice.stt import record_until_silence, transcribe
-            wav = record_until_silence()
-            text = transcribe(wav).strip()
-            self.transcribed.emit(text)
-        except Exception as e:
-            self.error_signal.emit(str(e))
+            self.transcribed.emit(transcribe(record_until_silence()).strip())
+        except Exception as e: self.error_signal.emit(str(e))
 
-
-# ── main window ───────────────────────────────────────────────────────────────
 
 class JarvisWindow(QWidget):
     def __init__(self):
@@ -165,29 +112,28 @@ class JarvisWindow(QWidget):
         from jarvis.tools.registry import ToolRegistry
         from jarvis.tools.system import register_system_tools
         from jarvis.tools.hyprland import register_hyprland_tools
-        registry = ToolRegistry()
-        register_system_tools(registry)
-        register_hyprland_tools(registry)
-        self._agent = AgentLoop(registry=registry)
-
-        self._worker: Optional[_Worker] = None
-        self._voice_worker: Optional[_VoiceWorker] = None
-        self._dot_timer = QTimer()
-        self._dot_timer.timeout.connect(self._animate_thinking)
-        self._dot_count = 0
-
-        self._build_ui()
-        self._apply_style()
+        r = ToolRegistry()
+        register_system_tools(r); register_hyprland_tools(r)
+        self._agent = AgentLoop(registry=r)
+        self._worker = None
+        self._voice_worker = None
+        self._thinking_timer = QTimer()
+        self._thinking_timer.timeout.connect(self._tick_thinking)
+        self._thinking_dots = 0
+        self._opacity = 0.0
+        self._build()
         self._center()
+        self._fade_in()
 
-    def _build_ui(self):
+    def _build(self):
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint |
             Qt.WindowType.WindowStaysOnTopHint |
             Qt.WindowType.Tool
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.resize(560, 480)
+        self.setFixedSize(540, 520)
+        self.setStyleSheet(_SS)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -197,78 +143,68 @@ class JarvisWindow(QWidget):
         outer.addWidget(container)
 
         layout = QVBoxLayout(container)
-        layout.setContentsMargins(16, 12, 16, 16)
-        layout.setSpacing(10)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(12)
 
-        # ── title bar ────────────────────────────────────────────────────
-        title_bar = QHBoxLayout()
-        title_bar.setContentsMargins(0, 0, 0, 0)
-
-        title = QLabel("J.A.R.V.I.S.")
+        # title bar
+        bar = QHBoxLayout()
+        bar.setContentsMargins(0, 0, 0, 0)
+        title = QLabel("Jarvis")
         title.setObjectName("title")
-        title_bar.addWidget(title)
-
-        self._status = QLabel("ONLINE")
+        bar.addWidget(title)
+        self._status = QLabel("ready")
         self._status.setObjectName("status")
-        title_bar.addWidget(self._status)
+        bar.addWidget(self._status)
+        bar.addStretch()
+        close = QPushButton("✕")
+        close.setObjectName("close_btn")
+        close.clicked.connect(self._fade_out)
+        bar.addWidget(close)
+        layout.addLayout(bar)
 
-        title_bar.addStretch()
+        # separator
+        sep = QFrame()
+        sep.setFrameShape(QFrame.Shape.HLine)
+        sep.setStyleSheet(f"color: {_BORDER};")
+        layout.addWidget(sep)
 
-        close_btn = QPushButton("✕")
-        close_btn.setObjectName("close_btn")
-        close_btn.clicked.connect(self.close)
-        title_bar.addWidget(close_btn)
-
-        layout.addLayout(title_bar)
-
-        # ── chat history ─────────────────────────────────────────────────
+        # history
         self._history = QTextEdit()
         self._history.setObjectName("history")
         self._history.setReadOnly(True)
-        self._history.setMinimumHeight(300)
         layout.addWidget(self._history)
 
-        # ── input row ────────────────────────────────────────────────────
-        input_row = QHBoxLayout()
-        input_row.setSpacing(8)
-
-        self._mic_btn = QPushButton("🎙")
-        self._mic_btn.setObjectName("mic_btn")
-        self._mic_btn.setProperty("recording", "false")
-        self._mic_btn.clicked.connect(self._toggle_voice)
-        input_row.addWidget(self._mic_btn)
-
+        # input row
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self._mic = QPushButton("🎙")
+        self._mic.setObjectName("mic_btn")
+        self._mic.setProperty("active", "false")
+        self._mic.clicked.connect(self._toggle_voice)
+        row.addWidget(self._mic)
         self._input = QLineEdit()
         self._input.setObjectName("input")
-        self._input.setPlaceholderText("Ask J.A.R.V.I.S. anything…")
+        self._input.setPlaceholderText("Ask anything…")
         self._input.returnPressed.connect(self._send)
-        input_row.addWidget(self._input)
+        row.addWidget(self._input)
+        self._send_btn = QPushButton("Send")
+        self._send_btn.setObjectName("send_btn")
+        self._send_btn.clicked.connect(self._send)
+        row.addWidget(self._send_btn)
+        layout.addLayout(row)
 
-        send_btn = QPushButton("SEND")
-        send_btn.setObjectName("send_btn")
-        send_btn.clicked.connect(self._send)
-        input_row.addWidget(send_btn)
+        from PyQt6.QtGui import QShortcut
+        QShortcut(QKeySequence("Escape"), self).activated.connect(self._fade_out)
 
-        layout.addLayout(input_row)
-
-        # ESC to close
-        esc = QShortcut(QKeySequence("Escape"), self)
-        esc.activated.connect(self.close)
-
-        # drag to move
         self._drag_pos: Optional[QPoint] = None
 
-    def _apply_style(self):
-        self.setStyleSheet(_STYLESHEET)
-
-    def _center(self):
-        screen = QApplication.primaryScreen().availableGeometry()
-        self.move(
-            (screen.width() - self.width()) // 2,
-            (screen.height() - self.height()) // 3,
-        )
-
-    # ── drag ─────────────────────────────────────────────────────────────
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        c = QColor(_BG); c.setAlpha(0)
+        p.setBrush(c); p.setPen(Qt.PenStyle.NoPen)
+        p.drawRect(self.rect())
+        p.end()
 
     def mousePressEvent(self, e):
         if e.button() == Qt.MouseButton.LeftButton:
@@ -281,112 +217,98 @@ class JarvisWindow(QWidget):
     def mouseReleaseEvent(self, e):
         self._drag_pos = None
 
-    # ── chat ──────────────────────────────────────────────────────────────
+    def _center(self):
+        s = QApplication.primaryScreen().availableGeometry()
+        self.move((s.width() - self.width()) // 2, (s.height() - self.height()) // 3)
 
-    def _append(self, who: str, text: str, color: str = _TEXT):
-        cursor = self._history.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
+    def _fade_in(self):
+        self._opacity = 0.0
+        self._fit = QTimer()
+        def _s():
+            self._opacity = min(1.0, self._opacity + 0.1)
+            self.setWindowOpacity(self._opacity)
+            if self._opacity >= 1.0: self._fit.stop()
+        self._fit.timeout.connect(_s)
+        self._fit.start(16)
+        self.setWindowOpacity(0.0)
 
-        fmt_who  = f'<span style="color:{_BLUE};font-weight:bold">{who}</span>'
-        fmt_text = f'<span style="color:{color}">{text}</span>'
-        self._history.append(f"{fmt_who}  {fmt_text}<br>")
-        self._history.verticalScrollBar().setValue(
-            self._history.verticalScrollBar().maximum()
+    def _fade_out(self):
+        self._fot = QTimer()
+        def _s():
+            self._opacity = max(0.0, self._opacity - 0.08)
+            self.setWindowOpacity(self._opacity)
+            if self._opacity <= 0.0: self._fot.stop(); self.close()
+        self._fot.timeout.connect(_s)
+        self._fot.start(16)
+
+    def _append(self, who: str, text: str, muted: bool = False):
+        color = _SUB if muted else _TEXT
+        who_color = _SUB if who == "you" else _ACCENT
+        html = (
+            f'<span style="color:{who_color};font-weight:600">{who}</span>'
+            f'&nbsp;&nbsp;<span style="color:{color}">{text}</span>'
         )
+        self._history.append(html)
+        self._history.append("")
+        self._history.verticalScrollBar().setValue(self._history.verticalScrollBar().maximum())
 
     def _send(self):
         text = self._input.text().strip()
-        if not text or self._worker:
-            return
+        if not text or self._worker: return
         self._input.clear()
-        self._append("You", text, _TEXT)
-        self._start_thinking()
-
+        self._send_btn.setEnabled(False)
+        self._append("you", text)
+        self._status.setText("thinking…")
+        self._thinking_dots = 0
+        self._thinking_timer.start(500)
         self._worker = _Worker(self._agent, text)
         self._worker.response_ready.connect(self._on_response)
         self._worker.error_signal.connect(self._on_error)
-        self._worker.finished.connect(self._worker_done)
+        self._worker.finished.connect(lambda: setattr(self, '_worker', None))
         self._worker.start()
 
-    def _on_response(self, text: str):
-        self._stop_thinking()
-        self._append("J.A.R.V.I.S.", text, _GOLD)
+    def _on_response(self, text):
+        self._thinking_timer.stop()
+        self._send_btn.setEnabled(True)
+        self._status.setText("ready")
+        self._append("jarvis", text)
 
-    def _on_error(self, err: str):
-        self._stop_thinking()
-        self._append("ERROR", err, _RED)
+    def _on_error(self, err):
+        self._thinking_timer.stop()
+        self._send_btn.setEnabled(True)
+        self._status.setText("error")
+        self._append("error", err, muted=True)
 
-    def _worker_done(self):
-        self._worker = None
-
-    # ── thinking animation ────────────────────────────────────────────────
-
-    def _start_thinking(self):
-        self._dot_count = 0
-        self._status.setText("THINKING")
-        self._status.setStyleSheet(f"color: {_BLUE};")
-        self._dot_timer.start(400)
-
-    def _stop_thinking(self):
-        self._dot_timer.stop()
-        self._status.setText("ONLINE")
-        self._status.setStyleSheet(f"color: {_DIM};")
-
-    def _animate_thinking(self):
-        self._dot_count = (self._dot_count + 1) % 4
-        dots = "·" * self._dot_count
-        self._status.setText(f"THINKING{dots}")
-
-    # ── voice ─────────────────────────────────────────────────────────────
+    def _tick_thinking(self):
+        self._thinking_dots = (self._thinking_dots + 1) % 4
+        self._status.setText("thinking" + "." * self._thinking_dots)
 
     def _toggle_voice(self):
-        if self._voice_worker and self._voice_worker.isRunning():
-            return
-        self._mic_btn.setProperty("recording", "true")
-        self._mic_btn.style().unpolish(self._mic_btn)
-        self._mic_btn.style().polish(self._mic_btn)
-        self._status.setText("LISTENING…")
-        self._status.setStyleSheet(f"color: {_RED};")
-
+        if self._voice_worker and self._voice_worker.isRunning(): return
+        self._mic.setProperty("active", "true")
+        self._mic.style().unpolish(self._mic); self._mic.style().polish(self._mic)
+        self._status.setText("listening…")
         self._voice_worker = _VoiceWorker()
         self._voice_worker.transcribed.connect(self._on_transcribed)
-        self._voice_worker.error_signal.connect(self._on_voice_error)
+        self._voice_worker.error_signal.connect(self._on_error)
         self._voice_worker.finished.connect(self._voice_done)
         self._voice_worker.start()
 
-    def _on_transcribed(self, text: str):
-        if text:
-            self._input.setText(text)
-            self._send()
-
-    def _on_voice_error(self, err: str):
-        self._append("ERROR", err, _RED)
+    def _on_transcribed(self, text):
+        if text: self._input.setText(text); self._send()
 
     def _voice_done(self):
-        self._mic_btn.setProperty("recording", "false")
-        self._mic_btn.style().unpolish(self._mic_btn)
-        self._mic_btn.style().polish(self._mic_btn)
-        if not self._worker:
-            self._status.setText("ONLINE")
-            self._status.setStyleSheet(f"color: {_DIM};")
+        self._mic.setProperty("active", "false")
+        self._mic.style().unpolish(self._mic); self._mic.style().polish(self._mic)
         self._voice_worker = None
+        if not self._worker: self._status.setText("ready")
 
-
-# ── entry point ───────────────────────────────────────────────────────────────
 
 def launch():
     from jarvis.core.config import load_env
     load_env()
-
     app = QApplication.instance() or QApplication(sys.argv)
-    app.setApplicationName("J.A.R.V.I.S.")
-
-    window = JarvisWindow()
-    window.show()
-    window._input.setFocus()
-
+    w = JarvisWindow()
+    w.show()
+    w._input.setFocus()
     sys.exit(app.exec())
-
-
-if __name__ == "__main__":
-    launch()
