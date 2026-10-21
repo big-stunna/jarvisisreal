@@ -197,8 +197,12 @@ class VoicePopup(QWidget):
         p.end()
 
     def _position(self):
-        s = QApplication.primaryScreen().availableGeometry()
-        self.move(s.width() - _W - _MARGIN, _MARGIN + 40)
+        s = QApplication.primaryScreen().geometry()
+        x = s.x() + s.width() - _W - _MARGIN
+        y = s.y() + _MARGIN + 40
+        self.move(x, y)
+        # Re-apply after show (Wayland may ignore pre-show move)
+        QTimer.singleShot(50, lambda: self.move(x, y))
 
     def _fade_in(self):
         self._opacity = 0.0

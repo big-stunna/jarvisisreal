@@ -41,6 +41,14 @@ class AgentLoop:
             self.memory.save(msg)
 
     async def turn(self, user_input: str, image_b64=None, image_label: str = "image") -> JarvisResponse:
+        # Try fast command dispatch first (brightness, volume, open apps, etc.)
+        from jarvis.tools.dispatcher import dispatch as _dispatch
+        cmd_result = await _dispatch(user_input)
+        if cmd_result is not None:
+            self._append(ChatMessage(role=MessageRole.USER, content=user_input))
+            self._append(ChatMessage(role=MessageRole.ASSISTANT, content=cmd_result))
+            return JarvisResponse(text=cmd_result)
+
         self._append(ChatMessage(role=MessageRole.USER, content=user_input))
 
         response: Optional[JarvisResponse] = None
