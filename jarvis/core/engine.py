@@ -67,12 +67,15 @@ class AgentLoop:
         return name in self.providers or provider_available(name)
 
     def _fast_chain(self, primary_name: str, primary_model: Optional[str]):
-        """Yield (provider_name, model) starting with primary, then config fallbacks."""
+        """Yield (provider_name, model) starting with primary, then config fallbacks.
+        Same provider can appear multiple times with different models."""
         yield primary_name, primary_model
+        seen = {(primary_name, primary_model)}
         for fb in (self._config.get("llm", {}) or {}).get("fast_fallbacks", []):
             name = fb.get("provider")
             model = fb.get("model")
-            if name and name != primary_name and self._usable(name):
+            if name and (name, model) not in seen and self._usable(name):
+                seen.add((name, model))
                 yield name, model
 
     def _vision_target(self) -> Tuple[Optional[str], Optional[str]]:

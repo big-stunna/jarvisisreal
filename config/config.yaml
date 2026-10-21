@@ -3,10 +3,12 @@ llm:
   default_provider: nvidia
   models:
     fast: meta/llama-3.3-70b-instruct
-  # Ordered fallback chain for FAST tasks when quota/rate-limit hits
+  # Ordered fallback chain — each model has its own 1000 req/month bucket on NVIDIA Build
   fast_fallbacks:
-    - provider: gemini
-      model: gemini-3.5-flash
+    - provider: nvidia
+      model: nvidia/llama-3.1-nemotron-70b-instruct
+    - provider: nvidia
+      model: meta/llama-3.1-8b-instruct
     code: claude-3-5-sonnet
     vision: gemini-3.5-flash
     vision_fallback: gemini-3.1-flash-lite   # used only if the main vision model is busy (429/503)
