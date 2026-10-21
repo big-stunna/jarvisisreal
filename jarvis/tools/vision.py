@@ -39,24 +39,31 @@ def _resize_and_encode(image_bytes: bytes) -> str:
         # Fallback to straight base64 on error
         return base64.b64encode(image_bytes).decode("utf-8")
 
-def get_active_window_geometry() -> Optional[str]:
-    """Get geometry 'X,Y WxH' of the currently focused window via hyprctl."""
+def _active_window() -> Dict[str, Any]:
     try:
         result = subprocess.run(
             ["hyprctl", "activewindow", "-j"],
             capture_output=True, text=True, check=True
         )
-        if not result.stdout.strip():
-            return None
+        data = json.loads(result.stdout) if result.stdout.strip() else {}
+        return data if isinstance(data, dict) else {}
+    except (subprocess.CalledProcessError, OSError, json.JSONDecodeError):
+        return {}
 
-        data = json.loads(result.stdout)
-        if "at" in data and "size" in data:
-            x, y = data["at"]
-            w, h = data["size"]
-            return f"{x},{y} {w}x{h}"
-        return None
-    except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError):
-        return None
+
+def get_active_window_geometry() -> Optional[str]:
+    """Get geometry 'X,Y WxH' of the currently focused window via hyprctl."""
+    data = _active_window()
+    if "at" in data and "size" in data:
+        x, y = data["at"]
+        w, h = data["size"]
+        return f"{x},{y} {w}x{h}"
+    return None
+
+
+def get_active_window_title() -> Optional[str]:
+    data = _active_window()
+    return data.get("title") or data.get("class") or None
 
 def capture_screen(region: bool = False, active_window: bool = False) -> Optional[str]:
     """
@@ -76,8 +83,8 @@ def capture_screen(region: bool = False, active_window: bool = False) -> Optiona
                 ["slurp"], capture_output=True, text=True, check=True
             )
             geometry = slurp_result.stdout.strip()
-        except subprocess.CalledProcessError:
-            # User canceled slurp (e.g., pressed Esc)
+        except Exception:
+            # Esc in slurp, slurp missing, or any other failure: no capture.
             return None
 
     # Run grim
@@ -91,7 +98,7 @@ def capture_screen(region: bool = False, active_window: bool = False) -> Optiona
         if not result.stdout:
             return None
         return _resize_and_encode(result.stdout)
-    except subprocess.CalledProcessError:
+    except Exception:
         return None
 
 def read_clipboard() -> Dict[str, Any]:
@@ -134,5 +141,5 @@ def read_clipboard() -> Dict[str, Any]:
 
         return {"type": "error", "error": "Clipboard empty"}
 
-    except subprocess.CalledProcessError:
+    except (subprocess.CalledProcessError, OSError):
         return {"type": "error", "error": "Failed to read clipboard or clipboard empty"}

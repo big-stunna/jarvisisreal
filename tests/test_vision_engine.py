@@ -131,7 +131,7 @@ async def test_gemini_payload_uses_low_token_settings():
     body = seen["body"]
     assert "gemini-3.5-flash:generateContent" in seen["url"]
     assert body["generationConfig"]["mediaResolution"] == "MEDIA_RESOLUTION_LOW"
-    assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "minimal"}
+    assert body["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 0}
     assert body["generationConfig"]["maxOutputTokens"] == 1024
     assert "tools" not in body
     assert body["systemInstruction"] == {"parts": [{"text": "sys"}]}

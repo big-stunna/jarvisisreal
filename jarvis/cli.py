@@ -161,7 +161,7 @@ async def _voice_or_chat_turn(
                 rec_thread.join(timeout=2.0)
                 # Restore normal line mode so the rest of the line echoes properly
                 termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_settings)
-                sys.stdout.write(f"\rYou: {first_char}")
+                sys.stdout.write(f"\nYou: {first_char}")
                 sys.stdout.flush()
                 rest = sys.stdin.readline()
                 text_input = (first_char + rest).strip()

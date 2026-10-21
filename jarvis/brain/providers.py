@@ -254,9 +254,21 @@ class GeminiProvider(Provider):
             if role == "system":
                 system.extend(self._parts(m.content))
                 continue
-            parts = self._parts(m.content)
             if role == "tool":
-                parts = [{"text": f"[{m.name} result] {m.content}"}]
+                # Gemini wants functionResponse inside a user turn
+                contents.append({"role": "user", "parts": [{"functionResponse": {
+                    "name": m.name or "tool",
+                    "response": {"result": m.content or ""},
+                }}]})
+                continue
+            parts = self._parts(m.content)
+            # Also emit any assistant tool_calls as functionCall parts (with thought_signature if present)
+            if role == "assistant" and m.tool_calls:
+                for tc in m.tool_calls:
+                    fc = {"name": tc["name"], "args": tc.get("arguments", {})}
+                    if tc.get("thought_signature"):
+                        fc["thoughtSignature"] = tc["thought_signature"]
+                    parts.append({"functionCall": fc})
             if parts:
                 contents.append({"role": "model" if role == "assistant" else "user", "parts": parts})
         payload = {
@@ -264,20 +276,36 @@ class GeminiProvider(Provider):
             "generationConfig": {
                 "maxOutputTokens": self.max_output_tokens,
                 "mediaResolution": f"MEDIA_RESOLUTION_{self.media_resolution.upper()}",
-                **({"thinkingConfig": {"thinkingLevel": self.thinking_level}}
-                   if self.thinking_level and self.thinking_level.lower() != "none" else {}),
+                "thinkingConfig": {"thinkingBudget": 0},
             },
         }
         if system:
             payload["systemInstruction"] = {"parts": system}
         return payload
 
+    @staticmethod
+    def _openai_tools_to_gemini(tools: list) -> list:
+        """Convert tool schemas to Gemini functionDeclarations.
+        Handles both flat {name, description, parameters} and OpenAI {type, function: {...}}."""
+        decls = []
+        for t in tools or []:
+            # flat format used by ToolRegistry
+            if "name" in t:
+                fn = t
+            else:
+                fn = t.get("function", {})
+            decl = {"name": fn.get("name", ""), "description": fn.get("description", "")}
+            if fn.get("parameters"):
+                decl["parameters"] = fn["parameters"]
+            decls.append(decl)
+        return [{"functionDeclarations": decls}] if decls else []
+
     async def complete(self, messages, model=None, tools=None) -> JarvisResponse:
-        # Tools are deliberately not sent: Gemini is only used for vision
-        # turns, and tool schemas would add tokens to every request.
         if not self.api_key:
             return JarvisResponse(text="Error: GEMINI_API_KEY is not set in .env.")
         payload = self._payload(messages)
+        if tools:
+            payload["tools"] = self._openai_tools_to_gemini(tools)
         models = [model or "gemini-3.5-flash"]
         if self.fallback_model and self.fallback_model not in models:
             models.append(self.fallback_model)
@@ -301,14 +329,24 @@ class GeminiProvider(Provider):
 
         data = resp.json()
         parts = ((data.get("candidates") or [{}])[0].get("content") or {}).get("parts", [])
-        text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
+        text = "".join(p.get("text", "") for p in parts if not p.get("thought") and "functionCall" not in p)
+        tool_calls = []
+        for i, p in enumerate(parts):
+            fc = p.get("functionCall")
+            if fc:
+                tool_calls.append(ToolCallRequest(
+                    id=f"call_{i}",
+                    name=fc.get("name", ""),
+                    arguments=fc.get("args", {}),
+                    thought_signature=fc.get("thoughtSignature"),
+                ))
         u = data.get("usageMetadata", {})
         usage = {
             "input": u.get("promptTokenCount", 0),
             "output": u.get("candidatesTokenCount", 0),
             "thinking": u.get("thoughtsTokenCount", 0),
         }
-        return JarvisResponse(text=text, usage=usage)
+        return JarvisResponse(text=text, tool_calls=tool_calls, usage=usage)
 
 
 def _parse_openai_style(data: dict) -> JarvisResponse:

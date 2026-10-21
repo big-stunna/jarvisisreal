@@ -8,6 +8,7 @@ class ToolCallRequest(BaseModel):
     id: str = Field(..., description="Unique ID for this tool call from the LLM")
     name: str = Field(..., description="Name of the tool to execute")
     arguments: Dict[str, Any] = Field(default_factory=dict, description="Parsed arguments for the tool")
+    thought_signature: Optional[str] = Field(None, description="Gemini thought_signature — must be echoed back in history")
 
 class ToolResult(BaseModel):
     tool_call_id: str
@@ -43,7 +44,8 @@ class LiveContext(BaseModel):
 class JarvisResponse(BaseModel):
     text: str = Field(..., description="Spoken/printed response to the user")
     tool_calls: List[ToolCallRequest] = Field(default_factory=list)
-    
+    usage: Optional[Dict[str, int]] = None
+
 class MessageRole(str, Enum):
     SYSTEM = "system"
     USER = "user"

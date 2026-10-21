@@ -11,8 +11,9 @@ class FakeProvider:
 
 
 class FakeRouter:
-    def route_utterance(self, text):
-        return "fake", None
+    def plan(self, text):
+        from jarvis.brain.router import TaskType
+        return TaskType.FAST, "fake", None
 
 
 def test_save_and_recent_roundtrip(tmp_path):
