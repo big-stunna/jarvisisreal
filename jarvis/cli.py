@@ -9,6 +9,9 @@ from jarvis.core.models import JarvisResponse
 from jarvis.tools.registry import ToolRegistry
 from jarvis.tools.system import register_system_tools
 from jarvis.tools.hyprland import register_hyprland_tools
+from jarvis.tools.windows import register_window_tools
+from jarvis.tools.files import register_file_tools
+from jarvis.tools.everyday import register_everyday_tools
 from jarvis.brain.router import BrainRouter
 from jarvis.tools.vision import capture_screen, read_clipboard
 
@@ -22,12 +25,20 @@ def _say(response: JarvisResponse) -> None:
         console.print(f"[dim]tokens: {u['input']} in / {u['output']} out / {u['thinking']} thinking[/dim]")
 
 
-async def interactive_chat(offline: bool = False, use_memory: bool = True):
-    console.print("[bold cyan]J.A.R.V.I.S.[/bold cyan] >> Initializing systems...")
-
+def _build_registry() -> ToolRegistry:
     registry = ToolRegistry()
     register_system_tools(registry)
     register_hyprland_tools(registry)
+    register_window_tools(registry)
+    register_file_tools(registry)
+    register_everyday_tools(registry)
+    return registry
+
+
+async def interactive_chat(offline: bool = False, use_memory: bool = True):
+    console.print("[bold cyan]J.A.R.V.I.S.[/bold cyan] >> Initializing systems...")
+
+    registry = _build_registry()
 
     router = BrainRouter(offline=offline)
     memory = ChatMemory() if use_memory else None
@@ -101,9 +112,7 @@ async def interactive_chat(offline: bool = False, use_memory: bool = True):
 
 async def voice_loop(offline: bool = False, use_memory: bool = True, no_hud: bool = False):
     """Continuous voice mode: listen → transcribe → respond → speak."""
-    registry = ToolRegistry()
-    register_system_tools(registry)
-    register_hyprland_tools(registry)
+    registry = _build_registry()
 
     router = BrainRouter(offline=offline)
     memory = ChatMemory() if use_memory else None
