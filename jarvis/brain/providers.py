@@ -304,7 +304,12 @@ class GeminiProvider(Provider):
         if not self.api_key:
             return JarvisResponse(text="Error: GEMINI_API_KEY is not set in .env.")
         payload = self._payload(messages)
-        if tools:
+        # Don't send tools on vision turns — images + tool schemas waste tokens
+        has_image = any(
+            isinstance(m.content, list) and any(b.get("type") == "image_url" for b in m.content)
+            for m in messages
+        )
+        if tools and not has_image:
             payload["tools"] = self._openai_tools_to_gemini(tools)
         models = [model or "gemini-3.5-flash"]
         if self.fallback_model and self.fallback_model not in models:
