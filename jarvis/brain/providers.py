@@ -47,6 +47,37 @@ class GroqProvider(Provider):
         return _parse_openai_style(resp.json())
 
 
+class OpenRouterProvider(Provider):
+    """OpenRouter — single key, routes to many models including free ones."""
+    name = "openrouter"
+    BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+    def __init__(self, api_key: Optional[str] = None, client: Optional[httpx.AsyncClient] = None):
+        self.api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
+        self.client = client or httpx.AsyncClient(timeout=30.0)
+
+    async def complete(self, messages, model=None, tools=None) -> JarvisResponse:
+        if not self.api_key:
+            return JarvisResponse(text="Error: OPENROUTER_API_KEY not set in .env.")
+        payload = {
+            "model": model or "meta-llama/llama-3.3-70b-instruct:free",
+            "messages": [m.model_dump(exclude_none=True) for m in messages],
+        }
+        if tools:
+            payload["tools"] = tools
+        resp = await self.client.post(
+            self.BASE_URL,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "HTTP-Referer": "https://github.com/jarvis-assistant",
+                "X-Title": "J.A.R.V.I.S.",
+            },
+            json=payload,
+        )
+        resp.raise_for_status()
+        return _parse_openai_style(resp.json())
+
+
 class NvidiaProvider(Provider):
     """NVIDIA Build OpenAI-compatible endpoint — 1000 free req/model/month."""
     name = "nvidia"
@@ -401,6 +432,7 @@ PROVIDER_KEY_ENV = {
     "claude": "ANTHROPIC_API_KEY",
     "gemini": "GEMINI_API_KEY",
     "nvidia": "NVIDIA_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
 }
 
 
@@ -415,4 +447,5 @@ PROVIDER_REGISTRY = {
     "ollama": OllamaProvider,
     "gemini": GeminiProvider,
     "nvidia": NvidiaProvider,
+    "openrouter": OpenRouterProvider,
 }

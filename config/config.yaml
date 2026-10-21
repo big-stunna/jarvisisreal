@@ -3,12 +3,16 @@ llm:
   default_provider: nvidia
   models:
     fast: meta/llama-3.3-70b-instruct
-  # Ordered fallback chain — each model has its own 1000 req/month bucket on NVIDIA Build
+  # Ordered fallback chain — exhausts each quota before moving on
   fast_fallbacks:
     - provider: nvidia
-      model: nvidia/llama-3.1-nemotron-70b-instruct
+      model: nvidia/llama-3.1-nemotron-70b-instruct   # 1000 req/month
     - provider: nvidia
-      model: meta/llama-3.1-8b-instruct
+      model: meta/llama-3.1-8b-instruct               # 1000 req/month
+    - provider: openrouter
+      model: meta-llama/llama-3.3-70b-instruct:free   # OpenRouter free tier
+    - provider: openrouter
+      model: mistralai/mistral-7b-instruct:free        # another free bucket
     code: claude-3-5-sonnet
     vision: gemini-3.5-flash
     vision_fallback: gemini-3.1-flash-lite   # used only if the main vision model is busy (429/503)
