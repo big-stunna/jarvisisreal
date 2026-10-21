@@ -15,11 +15,12 @@ async def voice_turn_async(
     on_listening: Optional[callable] = None,
     on_thinking: Optional[callable] = None,
     on_speaking: Optional[callable] = None,
+    on_idle: Optional[callable] = None,
 ) -> Optional[str]:
     """
     One full voice turn: record → transcribe → turn() → speak.
     Returns the assistant's text response, or None if nothing was heard.
-    Callbacks (on_listening / on_thinking / on_speaking) let the HUD hook in.
+    Callbacks let the HUD hook in; on_idle fires after speaking finishes.
     """
     from jarvis.voice import stt, tts
 
@@ -31,6 +32,8 @@ async def voice_turn_async(
 
     text = stt.transcribe(wav, model_size=model_size)
     if not text:
+        if on_idle:
+            on_idle()
         return None
 
     if on_thinking:
@@ -44,6 +47,9 @@ async def voice_turn_async(
 
     with ducked(ducking_volume):
         await tts.speak_async(reply, voice=tts_voice)
+
+    if on_idle:
+        on_idle()
 
     return reply
 

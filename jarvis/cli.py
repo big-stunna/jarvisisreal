@@ -99,7 +99,7 @@ async def interactive_chat(offline: bool = False, use_memory: bool = True):
             console.print(f"[bold red]Error:[/bold red] {e}")
 
 
-async def voice_loop(offline: bool = False, use_memory: bool = True):
+async def voice_loop(offline: bool = False, use_memory: bool = True, no_hud: bool = False):
     """Continuous voice mode: listen → transcribe → respond → speak."""
     registry = ToolRegistry()
     register_system_tools(registry)
@@ -120,26 +120,63 @@ async def voice_loop(offline: bool = False, use_memory: bool = True):
 
     from jarvis.voice.pipeline import voice_turn_async
 
-    console.print("[bold cyan]J.A.R.V.I.S.[/bold cyan] >> Voice mode active. Speak now (Ctrl-C to exit).")
-    while True:
+    # ── HUD ──────────────────────────────────────────────────────────────
+    hud = None
+    if not no_hud:
         try:
-            console.print("[dim]Listening...[/dim]")
-            reply = await voice_turn_async(
-                loop,
-                model_size=model_size,
-                tts_voice=tts_voice,
-                ducking_volume=ducking,
-                on_listening=lambda: console.print("[dim]  🎙  recording...[/dim]"),
-                on_thinking=lambda t: console.print(f"[bold green]You:[/bold green] {t}"),
-                on_speaking=lambda r: console.print(f"[bold cyan]J.A.R.V.I.S.[/bold cyan] >> {r}"),
-            )
-            if reply is None:
-                console.print("[dim]  (nothing heard)[/dim]")
-        except KeyboardInterrupt:
-            console.print("\n[bold cyan]J.A.R.V.I.S.[/bold cyan] >> Voice mode off.")
-            break
+            from jarvis.ui.hud import HUDController, load_theme_colors
+            hud = HUDController(colors=load_theme_colors(config))
+            console.print("[dim]HUD active.[/dim]")
         except Exception as e:
-            console.print(f"[bold red]Error:[/bold red] {e}")
+            console.print(f"[dim]HUD unavailable ({e}), continuing without.[/dim]")
+
+    def _on_listening():
+        console.print("[dim]  🎙  recording...[/dim]")
+        if hud:
+            hud.listening()
+
+    def _on_thinking(t: str):
+        console.print(f"[bold green]You:[/bold green] {t}")
+        if hud:
+            hud.thinking(t)
+
+    def _on_speaking(r: str):
+        console.print(f"[bold cyan]J.A.R.V.I.S.[/bold cyan] >> {r}")
+        if hud:
+            hud.speaking(r)
+
+    def _on_idle():
+        if hud:
+            hud.idle()
+
+    console.print("[bold cyan]J.A.R.V.I.S.[/bold cyan] >> Voice mode active. Speak now (Ctrl-C to exit).")
+    try:
+        while True:
+            try:
+                console.print("[dim]Listening...[/dim]")
+                reply = await voice_turn_async(
+                    loop,
+                    model_size=model_size,
+                    tts_voice=tts_voice,
+                    ducking_volume=ducking,
+                    on_listening=_on_listening,
+                    on_thinking=_on_thinking,
+                    on_speaking=_on_speaking,
+                    on_idle=_on_idle,
+                )
+                if reply is None:
+                    console.print("[dim]  (nothing heard)[/dim]")
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:
+                console.print(f"[bold red]Error:[/bold red] {e}")
+                if hud:
+                    hud.error(str(e))
+    except KeyboardInterrupt:
+        console.print("\n[bold cyan]J.A.R.V.I.S.[/bold cyan] >> Voice mode off.")
+    finally:
+        if hud:
+            hud.stop()
 
 
 def main():
@@ -147,13 +184,14 @@ def main():
     parser.add_argument("command", nargs="?", default="chat", help="Command to run (chat, voice, enroll-voice)")
     parser.add_argument("--offline", action="store_true", help="Run entirely using local Ollama model")
     parser.add_argument("--no-memory", action="store_true", help="Don't load or save chat history")
+    parser.add_argument("--no-hud", action="store_true", help="Disable the HUD overlay (voice mode)")
     args = parser.parse_args()
     load_env()
 
     if args.command == "chat":
         asyncio.run(interactive_chat(offline=args.offline, use_memory=not args.no_memory))
     elif args.command == "voice":
-        asyncio.run(voice_loop(offline=args.offline, use_memory=not args.no_memory))
+        asyncio.run(voice_loop(offline=args.offline, use_memory=not args.no_memory, no_hud=args.no_hud))
     else:
         console.print(f"Unknown command: {args.command}")
 
