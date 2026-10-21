@@ -23,6 +23,31 @@ def _num(text: str) -> Optional[int]:
 async def _dispatch(text: str) -> Optional[str]:
     t = text.lower().strip()
 
+    # ── short aliases: "bright 50", "vol 30", "vol up", "lock" ───────────
+    _short = re.match(r'^(bright|brightness|vol|volume)\s*(\d+)$', t)
+    if _short:
+        cmd, val = _short.group(1), int(_short.group(2))
+        if cmd in ("bright", "brightness"):
+            return await _set_brightness(val)
+        return await _set_volume(val)
+
+    if t in ("lock", "lock screen", "lock pc"):
+        subprocess.Popen(["hyprlock"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return "Locking screen."
+
+    if t in ("mute", "unmute"):
+        flag = "1" if t == "mute" else "0"
+        subprocess.run(["pactl", "set-sink-mute", "@DEFAULT_SINK@", flag], capture_output=True)
+        return "Muted." if t == "mute" else "Unmuted."
+
+    if t in ("vol up", "volume up"):
+        subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", "+10%"], capture_output=True)
+        return "Volume up."
+
+    if t in ("vol down", "volume down"):
+        subprocess.run(["pactl", "set-sink-volume", "@DEFAULT_SINK@", "-10%"], capture_output=True)
+        return "Volume down."
+
     # ── brightness ────────────────────────────────────────────────────────
     if any(w in t for w in ("brightness",)):
         if any(w in t for w in ("max", "full", "hundred", "100")):
