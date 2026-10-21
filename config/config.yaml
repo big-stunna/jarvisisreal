@@ -2,10 +2,10 @@
 llm:
   default_provider: gemini
   models:
-    fast: gemini-3.8-flash
+    fast: gemini-3.5-flash
     code: claude-3-5-sonnet
     vision: gemini-3.5-flash
-    vision_fallback: gemini-3.8-flash   # used only if the main vision model is busy (429/503)
+    vision_fallback: gemini-3.1-flash-lite   # used only if the main vision model is busy (429/503)
     vision_offline: gemma3:4b           # local vision model used in offline mode
     offline: qwen2.5:7b
 
