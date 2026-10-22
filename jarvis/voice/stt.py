@@ -112,13 +112,11 @@ _model_cache: dict[str, object] = {}
 
 def _get_model(size: str):
     if size not in _model_cache:
-        import os
-        os.environ.setdefault("HF_HUB_OFFLINE", "1")  # skip network check once cached
         from faster_whisper import WhisperModel
-        try:
-            _model_cache[size] = WhisperModel(size, device="cpu", compute_type="int8")
+        try:  # cached copy: skips the network check
+            _model_cache[size] = WhisperModel(size, device="cpu", compute_type="int8",
+                                              local_files_only=True)
         except Exception:
-            os.environ["HF_HUB_OFFLINE"] = "0"
             _model_cache[size] = WhisperModel(size, device="cpu", compute_type="int8")
     return _model_cache[size]
 
