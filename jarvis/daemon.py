@@ -17,7 +17,6 @@ import os
 import signal
 import sys
 import socket
-import subprocess
 import threading
 from pathlib import Path
 from typing import Optional
@@ -156,6 +155,7 @@ async def run_daemon(no_hud: bool = False, log_level: str = "INFO") -> None:
     from jarvis.tools.system import register_system_tools
     from jarvis.tools.hyprland import register_hyprland_tools
     from jarvis.voice.chimes import play_on, play_off
+    from jarvis.osctl import notify
 
     load_env()
     config = load_config()
@@ -172,7 +172,7 @@ async def run_daemon(no_hud: bool = False, log_level: str = "INFO") -> None:
 
     # ── HUD ──────────────────────────────────────────────────────────────
     hud = None
-    if not no_hud:
+    if not no_hud and sys.platform != "darwin":  # GTK layer-shell HUD is Linux-only
         try:
             from jarvis.ui.hud import HUDController, load_theme_colors
             hud = HUDController(colors=load_theme_colors(config))
@@ -192,12 +192,12 @@ async def run_daemon(no_hud: bool = False, log_level: str = "INFO") -> None:
         if enabled:
             log.info("Jarvis ENABLED")
             play_on()
-            subprocess.Popen(["notify-send", "-t", "1500", "Jarvis", "Wake word on"])
+            notify("Jarvis", "Wake word on")
             if hud: hud.idle()
         else:
             log.info("Jarvis DISABLED")
             play_off()
-            subprocess.Popen(["notify-send", "-t", "1500", "Jarvis", "Wake word off"])
+            notify("Jarvis", "Wake word off")
             if hud: hud.idle()
 
     def _handle_signal(*_):

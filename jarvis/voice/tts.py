@@ -1,4 +1,4 @@
-"""Text-to-speech via edge-tts (online) with paplay playback."""
+"""Text-to-speech via edge-tts (online), played with paplay (Linux) or afplay (macOS)."""
 from __future__ import annotations
 
 import asyncio
@@ -9,7 +9,7 @@ import os
 
 
 async def speak_async(text: str, voice: str = "en-GB-RyanNeural") -> None:
-    """Synthesise text and play it through the default audio sink via paplay."""
+    """Synthesise text and play it on the default output."""
     import edge_tts
 
     communicate = edge_tts.Communicate(text, voice)
@@ -24,8 +24,8 @@ async def speak_async(text: str, voice: str = "en-GB-RyanNeural") -> None:
         tmp_path = tmp.name
 
     try:
-        # paplay routes through PipeWire/PulseAudio directly to the active sink
-        subprocess.run(["paplay", tmp_path], check=True)
+        from jarvis.osctl import play_cmd
+        subprocess.run(play_cmd(tmp_path), check=True)
     finally:
         os.unlink(tmp_path)
 

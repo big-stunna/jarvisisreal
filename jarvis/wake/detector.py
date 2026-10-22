@@ -61,6 +61,7 @@ class WakeWordDetector:
 
     def _run(self) -> None:
         import sounddevice as sd
+        from jarvis.osctl import MIC_DEVICE
 
         try:
             oww = self._load_model()
@@ -75,7 +76,7 @@ class WakeWordDetector:
                 channels=1,
                 dtype="int16",
                 blocksize=_CHUNK,
-                device="pulse",
+                device=MIC_DEVICE,
             ) as stream:
                 while not self._stop_event.is_set():
                     audio, _ = stream.read(_CHUNK)

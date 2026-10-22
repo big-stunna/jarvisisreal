@@ -1,6 +1,6 @@
 """
 J.A.R.V.I.S. voice popup — top-right, continuous loop, single instance.
-Fixes: no TTS on open, kills TTS on close, single paplay process, no session loops.
+Fixes: no TTS on open, kills TTS on close, single player process, no session loops.
 Close: ESC or saying "close / thanks / goodbye / that's all".
 """
 from __future__ import annotations
@@ -136,17 +136,17 @@ class _TTSWorker(QThread):
         super().__init__()
         self._text = text
         self._voice = voice
-        self._proc = None  # paplay subprocess
+        self._proc = None  # audio player subprocess
 
     def run(self):
         import tempfile, os, edge_tts
         try:
-            # Generate MP3 then play via paplay — store proc so we can kill it
+            # Generate MP3 then play it — keep proc so it can be killed on close
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
                 tmp = f.name
             asyncio.run(self._synth(tmp))
             self._proc = subprocess.Popen(
-                ["paplay", tmp],
+                __import__("jarvis.osctl", fromlist=["play_cmd"]).play_cmd(tmp),
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
             self._proc.wait()
@@ -188,7 +188,8 @@ def _start_stall_logger(widget):
 
 
 def _screen_locked() -> bool:
-    return subprocess.run(["pgrep", "-x", "hyprlock"], capture_output=True).returncode == 0
+    from jarvis.osctl import screen_locked
+    return screen_locked()
 
 
 def _hard_exit():
@@ -248,6 +249,8 @@ class VoicePopup(QWidget):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        if sys.platform == "darwin":  # macOS hides tool windows when the app isn't frontmost
+            self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow)
         self.setWindowFlag(Qt.WindowType.WindowDoesNotAcceptFocus)
         self.setFixedSize(_W, _H)
         self.setStyleSheet("* { font-family: 'Inter', 'SF Pro Display', sans-serif; }")
@@ -376,7 +379,10 @@ class VoicePopup(QWidget):
 
 # ── single-instance guard ─────────────────────────────────────────────────────
 
-_LOCK_PATH = "/run/user/%d/jarvis-ask.lock"
+def _lock_path() -> str:
+    import os
+    from jarvis.osctl import runtime_dir
+    return os.path.join(runtime_dir(), f"jarvis-ask-{os.getuid()}.lock")
 _lock_fd = None
 
 
@@ -384,7 +390,7 @@ def _already_running() -> bool:
     """True if another popup holds the lock (released automatically when it exits)."""
     import fcntl, os
     try:
-        fd = os.open(_LOCK_PATH % os.getuid(), os.O_RDWR | os.O_CREAT, 0o600)
+        fd = os.open(_lock_path(), os.O_RDWR | os.O_CREAT, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         fcntl.flock(fd, fcntl.LOCK_UN)
         os.close(fd)
@@ -396,7 +402,7 @@ def _already_running() -> bool:
 def _acquire_lock() -> bool:
     global _lock_fd
     import fcntl, os
-    _lock_fd = os.open(_LOCK_PATH % os.getuid(), os.O_RDWR | os.O_CREAT, 0o600)
+    _lock_fd = os.open(_lock_path(), os.O_RDWR | os.O_CREAT, 0o600)
     try:
         fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return True

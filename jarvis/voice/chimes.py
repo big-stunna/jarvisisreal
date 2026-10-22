@@ -1,6 +1,6 @@
 """
 Audio feedback chimes. Generates WAV files on first use if missing.
-Plays via paplay (non-blocking).
+Plays via paplay/afplay (non-blocking).
 """
 from __future__ import annotations
 
@@ -55,8 +55,9 @@ def _ensure_sounds() -> None:
 
 def _play(path: Path) -> None:
     try:
+        from jarvis.osctl import play_cmd
         subprocess.Popen(
-            ["paplay", str(path)],
+            play_cmd(str(path)),
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )

@@ -14,7 +14,9 @@ dependencies = [
     "sounddevice",
     "faster-whisper",
     "edge-tts",
-    "resemblyzer",
+    "httpx",
+    "PyQt6",
+    "pyobjc-framework-Quartz; sys_platform == 'darwin'",
     "openwakeword",
     "av==18.1.0",
 ]
