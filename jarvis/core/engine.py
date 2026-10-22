@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from jarvis.brain.providers import ClaudeCliProvider
+from jarvis.brain.providers import GroqThenClaude
 from jarvis.core.memory import ChatMemory
 from jarvis.core.models import ChatMessage, JarvisResponse, MessageRole
 from jarvis.tools.registry import ToolRegistry
@@ -23,7 +23,9 @@ class AgentLoop:
         live_context=None,    # kept for API compat, unused
     ):
         self.registry = registry or ToolRegistry()
-        self._provider = ClaudeCliProvider()
+        from jarvis.core.config import load_env
+        load_env()
+        self._provider = GroqThenClaude()
         self.system_prompt = system_prompt
         self.memory = memory
         self.history: List[ChatMessage] = [

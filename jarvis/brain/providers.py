@@ -82,3 +82,55 @@ def provider_available(name: str) -> bool:
         return bool(shutil.which("claude"))
     return False
 
+
+
+class GroqProvider:
+    """Groq's OpenAI-compatible API: ~0.3-1s replies."""
+
+    name = "groq"
+    URL = "https://api.groq.com/openai/v1/chat/completions"
+
+    def available(self) -> bool:
+        import os
+        return bool(os.environ.get("GROQ_API_KEY"))
+
+    async def complete(self, messages, model=None, tools=None) -> JarvisResponse:
+        import os
+        import httpx
+        chat = [{"role": "system", "content": SYSTEM_PROMPT}]
+        for m in messages[-12:]:
+            if m.role in (MessageRole.USER, MessageRole.ASSISTANT) and m.content:
+                content = m.content if isinstance(m.content, str) else str(m.content)
+                chat.append({"role": m.role.value, "content": content})
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.post(
+                self.URL,
+                headers={"Authorization": f"Bearer {os.environ['GROQ_API_KEY']}"},
+                json={"model": model or os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b"),
+                      "messages": chat, "max_tokens": 400, "temperature": 0.5,
+                      "reasoning_effort": "low"},
+            )
+            r.raise_for_status()
+            return JarvisResponse(text=r.json()["choices"][0]["message"]["content"].strip())
+
+
+class GroqThenClaude:
+    """Groq first; falls back to `claude -p` if no key, an error, or a rate limit."""
+
+    name = "groq+claude"
+
+    def __init__(self):
+        self.groq = GroqProvider()
+        self.claude = ClaudeCliProvider()
+        self.last_used = None
+
+    async def complete(self, messages, model=None, tools=None) -> JarvisResponse:
+        if self.groq.available():
+            try:
+                resp = await self.groq.complete(messages)
+                self.last_used = "groq"
+                return resp
+            except Exception:
+                pass
+        self.last_used = "claude-cli"
+        return await self.claude.complete(messages)
