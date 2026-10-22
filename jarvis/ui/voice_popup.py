@@ -216,6 +216,7 @@ class VoicePopup(QWidget):
         self._voice   = tts_voice
         self._closing = False
         self._tw      = None   # current TTS worker — kept so we can kill it
+        self._empty   = 0      # consecutive listens with no speech
 
         from jarvis.core.engine import AgentLoop
         from jarvis.tools.registry import ToolRegistry
@@ -338,8 +339,12 @@ class VoicePopup(QWidget):
         log.info("heard: %r", text)
         if self._closing: return
         if not text:
+            self._empty += 1
+            if self._empty >= 3:  # ~15 s of silence: likely a false wake, close
+                self._dismiss(); return
             QTimer.singleShot(300, self._listen)
             return
+        self._empty = 0
         if _is_close(text):
             self._dismiss(); return
         self._reply.setText(f'"{text}"')

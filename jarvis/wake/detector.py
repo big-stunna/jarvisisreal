@@ -27,7 +27,7 @@ class WakeWordDetector:
     def __init__(
         self,
         on_wake: Callable[[], None],
-        threshold: float = 0.5,
+        threshold: float = 0.35,
         model_name: str = _MODEL,
     ):
         self._on_wake = on_wake
