@@ -137,7 +137,7 @@ class WakeWordDetector:
 
     def _run(self) -> None:
         import sounddevice as sd
-        from jarvis.osctl import MIC_DEVICE
+        from jarvis.osctl import mic_device
 
         try:
             oww = self._load_model()
@@ -158,7 +158,7 @@ class WakeWordDetector:
         kws = _SpeechKeywordSpotter(lambda text: fire(f"heard {text!r}"))
 
         while not self._stop_event.is_set():
-            self._listen(sd, MIC_DEVICE, oww, kws, fire)
+            self._listen(sd, mic_device(), oww, kws, fire)
             if not self._stop_event.is_set():
                 time.sleep(1.0)
                 sd._terminate(); sd._initialize()  # refresh devices after suspend/hotplug
