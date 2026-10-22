@@ -32,6 +32,16 @@ def _osa(script: str) -> str:
 MIC_DEVICE = None if IS_MAC else "pulse"
 
 
+def bt_headset_connected() -> bool:
+    """True when Bluetooth earbuds/headphones are connected. The wake word
+    listener backs off then, since holding their mic forces call-quality audio."""
+    if IS_MAC:
+        out = _run("system_profiler", "SPBluetoothDataType").stdout
+        connected = out.split("Not Connected:")[0].split("Connected:", 1)[-1] if "Connected:" in out else ""
+        return any(k in connected for k in ("Minor Type: Headphones", "Minor Type: Headset"))
+    return "bluez_output" in _run("pactl", "list", "short", "sinks").stdout
+
+
 def play_cmd(path: str) -> list[str]:
     """Command that plays an audio file (wav/mp3) and exits when done."""
     return ["afplay", path] if IS_MAC else ["paplay", path]

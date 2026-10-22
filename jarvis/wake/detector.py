@@ -137,7 +137,7 @@ class WakeWordDetector:
 
     def _run(self) -> None:
         import sounddevice as sd
-        from jarvis.osctl import MIC_DEVICE
+        from jarvis.osctl import MIC_DEVICE, bt_headset_connected
 
         try:
             oww = self._load_model()
@@ -157,7 +157,15 @@ class WakeWordDetector:
 
         kws = _SpeechKeywordSpotter(lambda text: fire(f"heard {text!r}"))
 
+        backed_off = False
         while not self._stop_event.is_set():
+            if bt_headset_connected():
+                if not backed_off:
+                    log.info("Bluetooth headset connected; wake word off (use SUPER+SHIFT+V)")
+                    backed_off = True
+                self._stop_event.wait(5.0)
+                continue
+            backed_off = False
             self._listen(sd, MIC_DEVICE, oww, kws, fire)
             if not self._stop_event.is_set():
                 time.sleep(1.0)
@@ -173,6 +181,9 @@ class WakeWordDetector:
                 q.put_nowait(indata.copy())
             except queue.Full:
                 pass
+
+        from jarvis.osctl import bt_headset_connected
+        next_bt_check = time.monotonic() + 5.0
 
         def suspend_gap() -> float:  # BOOTTIME keeps counting during sleep, MONOTONIC doesn't
             return time.clock_gettime(time.CLOCK_BOOTTIME) - time.monotonic()
@@ -191,6 +202,10 @@ class WakeWordDetector:
                     if hasattr(time, "CLOCK_BOOTTIME") and suspend_gap() - gap > 2.0:
                         log.info("Resumed from sleep; reopening mic")
                         return
+                    if time.monotonic() >= next_bt_check:
+                        next_bt_check = time.monotonic() + 5.0
+                        if bt_headset_connected():
+                            return
                     if self.paused:
                         kws.reset()
                         continue
