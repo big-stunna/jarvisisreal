@@ -10,7 +10,7 @@ from typing import Optional
 import numpy as np
 import sounddevice as sd
 
-from jarvis.osctl import mic_device
+from jarvis.osctl import MIC_DEVICE
 
 _SAMPLE_RATE = 16000
 _CHANNELS = 1
@@ -42,7 +42,7 @@ def record_until_silence(
         q.put(indata.copy())
 
     with sd.InputStream(
-        device=mic_device(),
+        device=MIC_DEVICE,
         samplerate=_SAMPLE_RATE,
         channels=_CHANNELS,
         dtype=_DTYPE,

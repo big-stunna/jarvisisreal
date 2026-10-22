@@ -32,29 +32,6 @@ def _osa(script: str) -> str:
 MIC_DEVICE = None if IS_MAC else "pulse"
 
 
-def mic_device():
-    """Input device for Jarvis: the built-in mic, so Bluetooth earbuds stay in
-    A2DP (music) mode instead of dropping to HFP (call) mode. Override with
-    JARVIS_MIC (a device name substring on macOS, a PulseAudio source on Linux)."""
-    want = os.environ.get("JARVIS_MIC", "")
-    if IS_MAC:
-        import sounddevice as sd
-        keys = [want] if want else ["MacBook", "Built-in"]
-        for i, d in enumerate(sd.query_devices()):
-            if d["max_input_channels"] > 0 and any(k.lower() in d["name"].lower() for k in keys):
-                return i
-        return None
-    src = want
-    if not src:
-        out = _run("pactl", "list", "short", "sources").stdout.splitlines()
-        names = [l.split("\t")[1] for l in out if "\t" in l]
-        builtin = [n for n in names if n.startswith("alsa_input.")]
-        src = next((n for n in builtin if "Mic1" in n), builtin[0] if builtin else "")
-    if src:
-        os.environ["PULSE_SOURCE"] = src  # read by PortAudio's pulse device on open
-    return MIC_DEVICE
-
-
 def play_cmd(path: str) -> list[str]:
     """Command that plays an audio file (wav/mp3) and exits when done."""
     return ["afplay", path] if IS_MAC else ["paplay", path]
